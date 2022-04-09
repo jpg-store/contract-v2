@@ -1,0 +1,58 @@
+cabal-version: 2.4
+name:          jpg-store-bulk-purchase
+version:       1.0.0.0
+author:        Richard Wallace
+maintainer:    rwallace@canonicalllc.com
+license:       Apache-2.0
+license-files: LICENSE
+
+flag defer-plugin-errors
+  description:
+    Defer errors from the plugin, useful for things like Haddock that can't handle it.
+
+  default:     False
+  manual:      True
+
+common lang
+  default-language: Haskell2010
+  ghc-options:
+    -Wall -Wnoncanonical-monad-instances -Wincomplete-uni-patterns
+    -Wincomplete-record-updates -Wredundant-constraints -Widentities
+    -rtsopts -fobject-code -fno-ignore-interface-pragmas
+    -fno-omit-interface-pragmas
+
+  -- See Plutus Tx readme
+  if flag(defer-plugin-errors)
+    ghc-options: -fplugin-opt PlutusTx.Plugin:defer-errors
+
+library
+  import:          lang
+  exposed-modules: Canonical.JpgStore.BulkPurchase
+  build-depends:
+    , aeson
+    , base               >=4.9 && <5
+    , bytestring
+    , cardano-api
+    , containers
+    , plutus-ledger
+    , plutus-ledger-api
+    , plutus-tx
+    , plutus-tx-plugin
+    , serialise
+
+  hs-source-dirs:  src
+
+executable create-smart-contract
+  import:         lang
+  hs-source-dirs: apps/create-smart-contract
+  main-is:        Main.hs
+  ghc-options:    -Wall -Werror -threaded -rtsopts -with-rtsopts=-T
+  build-depends:
+    , base
+    , bytestring
+    , cardano-api
+    , cardano-ledger-alonzo
+    , jpg-store-bulk-purchase
+    , optparse-applicative
+    , plutus-ledger
+    , plutus-ledger-api

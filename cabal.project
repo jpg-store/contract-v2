@@ -1,0 +1,216 @@
+index-state: 2021-08-14T00:00:00Z
+
+packages:
+    ./
+
+flags: -scrypt
+
+package cardano-crypto-praos
+  flags: -external-libsodium-vrf
+
+source-repository-package
+  type: git
+  location: https://github.com/input-output-hk/cardano-node
+  tag: 814df2c146f5d56f8c35a681fe75e85b905aed5d
+  subdir:
+    cardano-api
+
+package cryptonite
+  -- Using RDRAND instead of /dev/urandom as an entropy source for key
+  -- generation is dubious. Set the flag so we use /dev/urandom by default.
+  flags: -support_rdrand
+
+-- You never, ever, want this.
+write-ghc-environment-files: never
+
+-- Always build tests and benchmarks.
+tests: false
+
+source-repository-package
+  type: git
+  location: https://github.com/input-output-hk/optparse-applicative
+  tag: 7497a29cb998721a9068d5725d49461f2bba0e7a
+
+source-repository-package
+  type: git
+  location: https://github.com/input-output-hk/hedgehog-extras
+  tag: edf6945007177a638fbeb8802397f3a6f4e47c14
+
+source-repository-package
+  type: git
+  location: https://github.com/input-output-hk/cardano-base
+  tag: 41545ba3ac6b3095966316a99883d678b5ab8da8
+  subdir:
+    base-deriving-via
+    binary
+    binary/test
+    cardano-crypto-class
+    cardano-crypto-praos
+    measures
+    orphans-deriving-via
+    slotting
+    strict-containers
+
+source-repository-package
+  type: git
+  location: https://github.com/input-output-hk/cardano-crypto
+  tag: f73079303f663e028288f9f4a9e08bcca39a923e
+
+source-repository-package
+  type: git
+  location: https://github.com/input-output-hk/cardano-ledger
+  tag: 1a9ec4ae9e0b09d54e49b2a40c4ead37edadcce5
+  subdir:
+    eras/alonzo/impl
+    eras/byron/chain/executable-spec
+    eras/byron/crypto
+    eras/byron/crypto/test
+    eras/byron/ledger/executable-spec
+    eras/byron/ledger/impl
+    eras/byron/ledger/impl/test
+    eras/shelley/impl
+    eras/shelley/test-suite
+    eras/shelley-ma/impl
+    libs/cardano-data
+    libs/cardano-ledger-core
+    libs/cardano-ledger-pretty
+    libs/cardano-protocol-tpraos
+    libs/compact-map
+    libs/non-integral
+    libs/set-algebra
+    libs/small-steps
+    libs/small-steps-test
+
+source-repository-package
+  type: git
+  location: https://github.com/input-output-hk/cardano-prelude
+  tag: bb4ed71ba8e587f672d06edf9d2e376f4b055555
+  subdir:
+    cardano-prelude
+    cardano-prelude-test
+
+source-repository-package
+  type: git
+  location: https://github.com/input-output-hk/goblins
+  tag: cde90a2b27f79187ca8310b6549331e59595e7ba
+
+source-repository-package
+  type: git
+  location: https://github.com/input-output-hk/iohk-monitoring-framework
+  tag: 808724ff8a19a33d0ed06f9ef59fbd900b08553c
+  subdir:
+    contra-tracer
+    iohk-monitoring
+    plugins/backend-aggregation
+    plugins/backend-ekg
+    plugins/backend-monitoring
+    plugins/backend-trace-forwarder
+    plugins/scribe-systemd
+    tracer-transformers
+
+source-repository-package
+  type: git
+  location: https://github.com/input-output-hk/Win32-network
+  tag: 3825d3abf75f83f406c1f7161883c438dac7277d
+
+-- Should follow cardano-wallet.
+source-repository-package
+  type: git
+  location: https://github.com/input-output-hk/ouroboros-network
+  tag: d2d219a86cda42787325bb8c20539a75c2667132
+  subdir:
+    io-classes
+    io-sim
+    monoidal-synchronisation
+    network-mux
+    ntp-client
+    ouroboros-consensus
+    ouroboros-consensus-byron
+    ouroboros-consensus-cardano
+    ouroboros-consensus-protocol
+    ouroboros-consensus-shelley
+    ouroboros-network
+    ouroboros-network-framework
+    ouroboros-network-testing
+    strict-stm
+    typed-protocols
+    typed-protocols-cborg
+    typed-protocols-examples
+
+source-repository-package
+  type: git
+  location: https://github.com/input-output-hk/plutus
+  tag: cc72a56eafb02333c96f662581b57504f8f8992f
+  subdir:
+    plutus-core
+    plutus-ledger-api
+    plutus-tx
+    plutus-tx-plugin
+    prettyprinter-configurable
+    stubs/plutus-ghc-stub
+    word-array
+
+source-repository-package
+  type: git
+  location: https://github.com/input-output-hk/plutus-apps
+  tag: 8c8206088fa2b9c587be435b85c060cb5aca4e58
+  subdir:
+    freer-extras
+    plutus-ledger
+
+source-repository-package
+  type: git
+  location: https://github.com/Canonical-LLC/cardano-wallet
+  tag: 5e1503ac7ae7e371e4097b8447ff6781e05ca420
+  subdir:
+    lib/cli
+    lib/core
+    lib/core-integration
+    lib/dbvar
+    lib/launcher
+    lib/numeric
+    lib/shelley
+    lib/strict-non-empty-containers
+    lib/test-utils
+    lib/text-class
+
+source-repository-package
+  type: git
+  location: https://github.com/input-output-hk/cardano-addresses
+  tag: d2f86caa085402a953920c6714a0de6a50b655ec
+  subdir:
+    core
+    command-line
+
+source-repository-package
+  type: git
+  location: https://github.com/input-output-hk/ekg-forward
+  tag: d9e8fd302fa6ba41c07183d371e6777286d37bc2
+
+-- Drops an instance breaking our code. Should be released to Hackage eventually.
+source-repository-package
+  type: git
+  location: https://github.com/input-output-hk/flat
+  tag: ee59880f47ab835dbd73bea0847dab7869fc20d8
+
+constraints:
+    hedgehog >= 1.0
+  , bimap >= 0.4.0
+  , libsystemd-journal >= 1.4.4
+  , systemd >= 2.3.0
+    -- systemd-2.3.0 requires at least network 3.1.1.0 but it doesn't declare
+    -- that dependency
+  , network >= 3.1.1.0
+
+package comonad
+  flags: -test-doctests
+
+package cardano-ledger-alonzo-test
+  tests: False
+
+package plutus-ledger
+  tests: False
+  flags: -scrypt
+
+allow-newer:
+  size-based:template-haskell
