@@ -45,7 +45,7 @@
           (hsPkgs."serialise" or (errorHandler.buildDepError "serialise"))
           ];
         buildable = true;
-        modules = [ "Canonical/Escrow" ];
+        modules = [ "Canonical/JpgStore/BulkPurchase" ];
         hsSourceDirs = [ "src" ];
         };
       exes = {
@@ -53,14 +53,18 @@
           depends = [
             (hsPkgs."base" or (errorHandler.buildDepError "base"))
             (hsPkgs."bytestring" or (errorHandler.buildDepError "bytestring"))
-            (hsPkgs."jpg-store-bulk-purchase" or (errorHandler.buildDepError "jpg-store-bulk-purchase"))
             (hsPkgs."cardano-api" or (errorHandler.buildDepError "cardano-api"))
             (hsPkgs."cardano-ledger-alonzo" or (errorHandler.buildDepError "cardano-ledger-alonzo"))
+            (hsPkgs."jpg-store-bulk-purchase" or (errorHandler.buildDepError "jpg-store-bulk-purchase"))
+            (hsPkgs."optparse-applicative" or (errorHandler.buildDepError "optparse-applicative"))
+            (hsPkgs."plutus-ledger" or (errorHandler.buildDepError "plutus-ledger"))
             (hsPkgs."plutus-ledger-api" or (errorHandler.buildDepError "plutus-ledger-api"))
             ];
           buildable = true;
-          hsSourceDirs = [ "app" ];
-          mainPath = [ "Main.hs" ];
+          hsSourceDirs = [ "apps/create-smart-contract" ];
+          mainPath = [
+            "Main.hs"
+            ] ++ (pkgs.lib).optional (flags.defer-plugin-errors) "";
           };
         };
       };
