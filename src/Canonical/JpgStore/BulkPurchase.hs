@@ -10,10 +10,14 @@
 {-# LANGUAGE TypeFamilies #-}
 
 module Canonical.JpgStore.BulkPurchase
-  ( Swap(..)
+  ( Payout(..)
+  , Redeemer(..)
+  , Swap(..)
   , swap
+  , writePlutusFile
   ) where
 
+import qualified Cardano.Api as Api
 import Cardano.Api.Shelley (PlutusScript(..), PlutusScriptV1)
 import Codec.Serialise (serialise)
 import qualified Data.ByteString.Lazy as LB
@@ -27,6 +31,8 @@ import PlutusTx
 import qualified PlutusTx.AssocMap as M
 import PlutusTx.AssocMap (Map)
 import PlutusTx.Prelude
+import Prelude (IO, print, putStrLn)
+import System.FilePath
 
 -------------------------------------------------------------------------------
 -- Types
@@ -52,7 +58,6 @@ data Swap = Swap
 data Redeemer
   = Buy
   | Cancel
-  | EmergencyCancel
   | Close
 
 -------------------------------------------------------------------------------
@@ -62,18 +67,6 @@ isScriptAddress :: Address -> Bool
 isScriptAddress Address { addressCredential } = case addressCredential of
   ScriptCredential _ -> True
   _ -> False
-
--- Verify that there is only one script input and get it's value.
-getOnlyScriptInput :: TxInfo -> Value
-getOnlyScriptInput info =
-  let
-    isScriptInput :: TxInInfo -> Bool
-    isScriptInput = isScriptAddress . txOutAddress . txInInfoResolved
-
-    input = case filter isScriptInput . txInfoInputs $ info of
-      [i] -> i
-      _ -> traceError "expected exactly one script input"
-  in txOutValue . txInInfoResolved $ input
 
 payoutToInequality :: Payout -> (PubKeyHash, Value)
 payoutToInequality Payout {..} = (pAddress, pValue)
@@ -113,8 +106,6 @@ instance Eq Redeemer where
     (Buy, _) -> False
     (Cancel, Cancel) -> True
     (Cancel, _) -> False
-    (EmergencyCancel, EmergencyCancel) -> True
-    (EmergencyCancel, _) -> False
     (Close, Close) -> True
     (Close, _) -> False
 
@@ -132,8 +123,8 @@ validateOutputConstraints info constraints = all (uncurry (paidAtleastTo info)) 
 
 -- Every branch but user initiated cancel requires checking the input
 -- to ensure there is only one script input.
-swapValidator :: PubKeyHash -> Swap -> Redeemer -> ScriptContext -> Bool
-swapValidator emergencyPkh s r ctx =
+swapValidator :: Swap -> Redeemer -> ScriptContext -> Bool
+swapValidator s r ctx =
   let
     info :: TxInfo
     info = scriptContextTxInfo ctx
@@ -142,6 +133,14 @@ swapValidator emergencyPkh s r ctx =
     singleSigner = case txInfoSignatories info of
       [x] -> x
       _ -> traceError "single signer expected"
+
+    -- Verify that the script inputs are all for this script
+    validScriptInputs :: Bool
+    validScriptInputs =
+      let
+        isScriptInput :: TxInInfo -> Bool
+        isScriptInput = isScriptAddress . txOutAddress . txInInfoResolved
+      in any (not . isScriptInput) . txInfoInputs $ info
 
     isBeforeDeadline :: Bool
     isBeforeDeadline = case sDeadline s of
@@ -173,14 +172,8 @@ swapValidator emergencyPkh s r ctx =
     assetsPaidToBuyer :: Bool
     assetsPaidToBuyer =
       outputsAreValid . flip concatMap allSwaps $ \s' -> Payout singleSigner (sSwapValue s') : sSwapPayouts s'
-  in case r of
-    Cancel ->
-      traceIfFalse "deadline passed, use a close redeemer" isAfterDeadline
-        && traceIfFalse "not signed by owner" (singleSigner == sOwner s)
-        && traceIfFalse "wrong output" assetsReturnedToOwner
-    EmergencyCancel ->
-      traceIfFalse "not signed by emergency pub key hash" (singleSigner == emergencyPkh)
-        && traceIfFalse "wrong output" assetsReturnedToOwner
+  in traceIfFalse "invalid script inputs" validScriptInputs && case r of
+    Cancel -> traceIfFalse "not signed by owner" (singleSigner == sOwner s)
     Close -> case sDeadline s of
       Nothing -> traceError "swap has no deadline"
       Just _ -> traceIfFalse "before the deadline" isAfterDeadline && traceIfFalse "wrong output" assetsReturnedToOwner
@@ -194,13 +187,18 @@ instance ValidatorTypes Swapping where
   type DatumType Swapping = Swap
   type RedeemerType Swapping = Redeemer
 
-validator :: PubKeyHash -> TypedValidator Swapping
-validator pkh =
+validator :: TypedValidator Swapping
+validator =
   mkTypedValidator @Swapping
-    ($$(PlutusTx.compile [|| swapValidator ||]) `PlutusTx.applyCode` PlutusTx.liftCode pkh)
+    $$(PlutusTx.compile [|| swapValidator ||])
     $$(PlutusTx.compile [|| wrap ||])
   where
     wrap = wrapValidator
 
-swap :: PubKeyHash -> PlutusScript PlutusScriptV1
-swap = PlutusScriptSerialised . SBS.toShort . LB.toStrict . serialise . validatorScript . validator
+swap :: PlutusScript PlutusScriptV1
+swap = PlutusScriptSerialised . SBS.toShort . LB.toStrict . serialise . validatorScript $ validator
+
+writePlutusFile :: FilePath -> IO ()
+writePlutusFile filePath = Api.writeFileTextEnvelope filePath Nothing swap >>= \case
+  Left err -> print $ Api.displayError err
+  Right () -> putStrLn $ "wrote NFT validator to file " ++ filePath

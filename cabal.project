@@ -1,4 +1,4 @@
-index-state: 2021-08-14T00:00:00Z
+index-state: 2021-08-15T00:00:00Z
 
 packages:
     ./
@@ -192,6 +192,16 @@ source-repository-package
   type: git
   location: https://github.com/input-output-hk/flat
   tag: ee59880f47ab835dbd73bea0847dab7869fc20d8
+
+source-repository-package
+  type: git
+  location: https://github.com/purefn/cardano-transaction-builder
+  tag: ba1fe1d9964bc4671a1f36ed433dc08ce6cd779b
+
+source-repository-package
+  type: git
+  location: https://github.com/purefn/test-mint-scripts
+  tag: 0627ce4815bb9fd0c60c39f0f622110b13df24b2
 
 constraints:
     hedgehog >= 1.0

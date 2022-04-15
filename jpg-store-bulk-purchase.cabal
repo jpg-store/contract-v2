@@ -34,6 +34,7 @@ library
     , bytestring
     , cardano-api
     , containers
+    , filepath
     , plutus-ledger
     , plutus-ledger-api
     , plutus-tx
@@ -44,7 +45,7 @@ library
 
 executable create-smart-contract
   import:         lang
-  hs-source-dirs: apps/create-smart-contract
+  hs-source-dirs: app
   main-is:        Main.hs
   ghc-options:    -Wall -Werror -threaded -rtsopts -with-rtsopts=-T
   build-depends:
@@ -56,3 +57,27 @@ executable create-smart-contract
     , optparse-applicative
     , plutus-ledger
     , plutus-ledger-api
+
+executable integration-tests
+  import:         lang
+  hs-source-dirs: integration-tests
+  main-is:        Main.hs
+  ghc-options:    -Wall -Werror -threaded -rtsopts -with-rtsopts=-T
+  build-depends:
+    , base
+    , cardano-api
+    , cardano-transaction
+    , containers
+    , directory
+    , envparse
+    , extra
+    , filepath
+    , hspec
+    , jpg-store-bulk-purchase
+    , managed
+    , mtl
+    , plutus-ledger
+    , plutus-ledger-api
+    , process
+    , temporary
+    , test-mint-scripts
