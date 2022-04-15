@@ -38,6 +38,7 @@
           (hsPkgs."bytestring" or (errorHandler.buildDepError "bytestring"))
           (hsPkgs."cardano-api" or (errorHandler.buildDepError "cardano-api"))
           (hsPkgs."containers" or (errorHandler.buildDepError "containers"))
+          (hsPkgs."filepath" or (errorHandler.buildDepError "filepath"))
           (hsPkgs."plutus-ledger" or (errorHandler.buildDepError "plutus-ledger"))
           (hsPkgs."plutus-ledger-api" or (errorHandler.buildDepError "plutus-ledger-api"))
           (hsPkgs."plutus-tx" or (errorHandler.buildDepError "plutus-tx"))
@@ -57,10 +58,34 @@
             (hsPkgs."cardano-ledger-alonzo" or (errorHandler.buildDepError "cardano-ledger-alonzo"))
             (hsPkgs."jpg-store-bulk-purchase" or (errorHandler.buildDepError "jpg-store-bulk-purchase"))
             (hsPkgs."optparse-applicative" or (errorHandler.buildDepError "optparse-applicative"))
+            (hsPkgs."plutus-ledger" or (errorHandler.buildDepError "plutus-ledger"))
             (hsPkgs."plutus-ledger-api" or (errorHandler.buildDepError "plutus-ledger-api"))
             ];
           buildable = true;
-          hsSourceDirs = [ "apps/create-smart-contract" ];
+          hsSourceDirs = [ "app" ];
+          mainPath = [
+            "Main.hs"
+            ] ++ (pkgs.lib).optional (flags.defer-plugin-errors) "";
+          };
+        "integration-tests" = {
+          depends = [
+            (hsPkgs."base" or (errorHandler.buildDepError "base"))
+            (hsPkgs."cardano-api" or (errorHandler.buildDepError "cardano-api"))
+            (hsPkgs."cardano-transaction" or (errorHandler.buildDepError "cardano-transaction"))
+            (hsPkgs."directory" or (errorHandler.buildDepError "directory"))
+            (hsPkgs."envparse" or (errorHandler.buildDepError "envparse"))
+            (hsPkgs."extra" or (errorHandler.buildDepError "extra"))
+            (hsPkgs."filepath" or (errorHandler.buildDepError "filepath"))
+            (hsPkgs."hspec" or (errorHandler.buildDepError "hspec"))
+            (hsPkgs."jpg-store-bulk-purchase" or (errorHandler.buildDepError "jpg-store-bulk-purchase"))
+            (hsPkgs."managed" or (errorHandler.buildDepError "managed"))
+            (hsPkgs."mtl" or (errorHandler.buildDepError "mtl"))
+            (hsPkgs."process" or (errorHandler.buildDepError "process"))
+            (hsPkgs."temporary" or (errorHandler.buildDepError "temporary"))
+            (hsPkgs."test-mint-scripts" or (errorHandler.buildDepError "test-mint-scripts"))
+            ];
+          buildable = true;
+          hsSourceDirs = [ "integration-tests" ];
           mainPath = [
             "Main.hs"
             ] ++ (pkgs.lib).optional (flags.defer-plugin-errors) "";
