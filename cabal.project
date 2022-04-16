@@ -196,7 +196,7 @@ source-repository-package
 source-repository-package
   type: git
   location: https://github.com/purefn/cardano-transaction-builder
-  tag: ba1fe1d9964bc4671a1f36ed433dc08ce6cd779b
+  tag: c1863c7831b46911d78734552f0a77d71ea8b9bc
 
 source-repository-package
   type: git

@@ -163,21 +163,32 @@ swapValidator s r ctx =
 
     outputsAreValid :: [Payout] -> Bool
     outputsAreValid = validateOutputConstraints info . mergeAll . map (uncurry M.singleton . payoutToInequality)
-
-    -- assume all redeemers are the same and all the assets are going back to their owner
-    assetsReturnedToOwner :: Bool
-    assetsReturnedToOwner = outputsAreValid . flip fmap allSwaps $ \s' -> Payout (sOwner s') (sSwapValue s')
-
-    -- assume all redeemers are buys, all the payouts should be paid, and the assets should go to the tx signer (aka the buyer)
-    assetsPaidToBuyer :: Bool
-    assetsPaidToBuyer =
-      outputsAreValid . flip concatMap allSwaps $ \s' -> Payout singleSigner (sSwapValue s') : sSwapPayouts s'
   in traceIfFalse "invalid script inputs" validScriptInputs && case r of
-    Cancel -> traceIfFalse "not signed by owner" (singleSigner == sOwner s)
-    Close -> case sDeadline s of
+    Cancel -> trace "cancel redeemer" traceIfFalse "not signed by owner" (singleSigner == sOwner s)
+    Close -> trace "close redeemer" $ case sDeadline s of
       Nothing -> traceError "swap has no deadline"
-      Just _ -> traceIfFalse "before the deadline" isAfterDeadline && traceIfFalse "wrong output" assetsReturnedToOwner
-    Buy -> traceIfFalse "deadline passed" isBeforeDeadline && traceIfFalse "wrong output" assetsPaidToBuyer
+      Just _ ->
+        let
+          -- assume all redeemers are Close and all the assets are going back to their owner
+          assetsReturnedToOwner :: Bool
+          assetsReturnedToOwner = outputsAreValid . flip fmap allSwaps $ \s' -> Payout (sOwner s') (sSwapValue s')
+        in traceIfFalse "before the deadline" isAfterDeadline && traceIfFalse "wrong output" assetsReturnedToOwner
+    Buy ->
+      let
+        -- assume all redeemers are buys, all the payouts should be paid, and the assets should go to the tx signer (aka the buyer)
+        assets :: Value
+        sellerPayouts :: [Payout]
+        (assets, sellerPayouts) = flip foldMap allSwaps $ \s' -> (sSwapValue s', sSwapPayouts s')
+
+        assetsPaidToBuyer :: Bool
+        assetsPaidToBuyer = paidAtleastTo info singleSigner assets
+
+        payoutsToSeller :: Bool
+        payoutsToSeller = outputsAreValid sellerPayouts
+      in
+        trace "buy redeemer" traceIfFalse "deadline passed" isBeforeDeadline
+        && traceIfFalse "wrong buyer output" assetsPaidToBuyer
+        && traceIfFalse "wrong payouts" payoutsToSeller
 
 -------------------------------------------------------------------------------
 -- Entry Points

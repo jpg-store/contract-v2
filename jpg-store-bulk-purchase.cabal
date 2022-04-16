@@ -64,7 +64,9 @@ executable integration-tests
   main-is:        Main.hs
   ghc-options:    -Wall -Werror -threaded -rtsopts -with-rtsopts=-T
   build-depends:
+    , aeson
     , base
+    , bytestring
     , cardano-api
     , cardano-transaction
     , containers
@@ -81,3 +83,4 @@ executable integration-tests
     , process
     , temporary
     , test-mint-scripts
+    , text
