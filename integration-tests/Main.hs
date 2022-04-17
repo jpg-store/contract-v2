@@ -124,7 +124,7 @@ policy4 = (!! 3)
 
 runTests :: Config -> IO ()
 runTests config = do
-  expiredDeadline <- liftIO $ (5000-) . fromMilliSeconds . round . (* 1000) <$> getPOSIXTime
+  expiredDeadline <- liftIO $ (5000 -) . fromMilliSeconds . round . (* 1000) <$> getPOSIXTime
   hspec $ aroundAllWith (createResources config) $ do
     describe "single offer" $ do
       aroundWith (createSwaps config [swapSpec seller1 policy1]) $ do
@@ -134,17 +134,16 @@ runTests config = do
         it "can be cancelled by owner" $ \(resources, swaps) -> evalCancelSwaps config resources swaps seller1
 
         context "without expiration" $ do
-          it "cannot be closed" $ \(resources, swaps) ->
-            evalCloseSwaps config resources swaps marketplace `shouldThrow` isTxException
+          it "cannot be closed"
+            $ \(resources, swaps) -> evalCloseSwaps config resources swaps marketplace `shouldThrow` isTxException
 
       context "that has expired" $ do
         aroundWith (createSwaps config [(swapSpec seller1 policy1) { specDeadline = Just expiredDeadline }]) $ do
 
-          it "cannot be purchased" $ \(resources, swaps) ->
-            evalBuys config resources swaps buyer `shouldThrow` isTxException
+          it "cannot be purchased"
+            $ \(resources, swaps) -> evalBuys config resources swaps buyer `shouldThrow` isTxException
 
-          it "can be cancelled by owner" $ \(resources, swaps) ->
-            evalCancelSwaps config resources swaps seller1
+          it "can be cancelled by owner" $ \(resources, swaps) -> evalCancelSwaps config resources swaps seller1
 
           it "can be closed by anyone" $ \(resources, swaps) -> evalCloseSwaps config resources swaps marketplace
 
@@ -175,12 +174,19 @@ runTests config = do
               evalBuys config resources swaps buyer
 
         context "that have expired" $ do
-          aroundWith (createSwaps config [(swapSpec seller1 policy1) { specDeadline = Just expiredDeadline }, (swapSpec seller2 policy3) { specDeadline = Just expiredDeadline }]) $ do
+          aroundWith
+              (createSwaps
+                config
+                [ (swapSpec seller1 policy1) { specDeadline = Just expiredDeadline }
+                , (swapSpec seller2 policy3) { specDeadline = Just expiredDeadline }
+                ]
+              )
+            $ do
 
-            it "cannot be purchased" $ \(resources, swaps) ->
-              evalBuys config resources swaps buyer `shouldThrow` isTxException
+                it "cannot be purchased"
+                  $ \(resources, swaps) -> evalBuys config resources swaps buyer `shouldThrow` isTxException
 
-            it "can be closed by anyone" $ \(resources, swaps) -> evalCloseSwaps config resources swaps marketplace
+                it "can be closed by anyone" $ \(resources, swaps) -> evalCloseSwaps config resources swaps marketplace
 
 main :: IO ()
 main = do
@@ -247,9 +253,7 @@ allWallets Wallets {..} = buyer : royalties : marketplace : sellers
 
 lookupWalletAddr :: PubKeyHash -> Wallets -> String
 lookupWalletAddr pkh =
-  maybe (error $ "couldn't find wallet for pkh " <> show pkh) walletAddr
-    . find ((show pkh ==) . walletPkh)
-    . allWallets
+  maybe (error $ "couldn't find wallet for pkh " <> show pkh) walletAddr . find ((show pkh ==) . walletPkh) . allWallets
 
 
 evalBuys :: Config -> Resources -> [SwapAndDatum] -> SelectWallet -> IO ()
@@ -293,11 +297,11 @@ evalCancelSwaps config@Config {..} Resources {..} swaps canceller = do
   waitForNextBlock cTestnetMagic
 
 evalCloseSwaps :: Config -> Resources -> [SwapAndDatum] -> SelectWallet -> IO ()
-evalCloseSwaps config@Config{..} Resources{..} swaps closer = do
+evalCloseSwaps config@Config {..} Resources {..} swaps closer = do
   let Wallet {..} = closer rWallets
 
   handle (throwIO . TxException) . eval cTestnetMagic cProtocolParams $ do
-    void $ forScriptInputs config swaps $ \s@Swap{..} utxo -> do
+    void $ forScriptInputs config swaps $ \s@Swap {..} utxo -> do
       scriptInput utxo cPlutusScript s Close
       void $ output (lookupWalletAddr sOwner rWallets) ("1758582 lovelace" <> toTxValue sSwapValue)
 
@@ -316,14 +320,12 @@ forScriptInputs Config {..} swaps f = for swaps $ \SwapAndDatum {..} -> do
   utxos <- findScriptInputs cScriptAddr sadDatumHash
   -- we only take the first one in case there are multiple with the same datum from previous runs
   case utxos of
-    [] -> liftIO . fail .  mconcat $
-      [ "no script inputs found for script address '"
-      , cScriptAddr
-      , "' and datum hash '"
-      , sadDatumHash
-      , "'"
-      ]
-    x:_ -> f sadSwap x
+    [] ->
+      liftIO
+        . fail
+        . mconcat
+        $ ["no script inputs found for script address '", cScriptAddr, "' and datum hash '", sadDatumHash, "'"]
+    x : _ -> f sadSwap x
 
 data SwapSpec = SwapSpec
   { specSeller :: SelectWallet
@@ -360,7 +362,7 @@ createSwap config@Config {..} wallet@Wallet {..} policy payouts deadline = do
   datumHash <- hashDatum . toCliJson $ swapDatum
 
   -- if there is an existing swap that is the same, reuse it
-  existingScriptInput <- filter ((==Just datumHash) . utxoDatumHash) <$> queryUtxos walletAddr cTestnetMagic
+  existingScriptInput <- filter ((== Just datumHash) . utxoDatumHash) <$> queryUtxos walletAddr cTestnetMagic
 
   when (null existingScriptInput) $ do
     txValue <- evalMint config wallet policy "123456" 1

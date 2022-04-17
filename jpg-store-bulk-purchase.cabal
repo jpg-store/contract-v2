@@ -27,6 +27,7 @@ common lang
 
 library
   import:          lang
+  other-modules:   Canonical.Shared
   exposed-modules: Canonical.JpgStore.BulkPurchase
   build-depends:
     , aeson
