@@ -46,7 +46,7 @@
           (hsPkgs."serialise" or (errorHandler.buildDepError "serialise"))
           ];
         buildable = true;
-        modules = [ "Canonical/JpgStore/BulkPurchase" ];
+        modules = [ "Canonical/Shared" "Canonical/JpgStore/BulkPurchase" ];
         hsSourceDirs = [ "src" ];
         };
       exes = {
