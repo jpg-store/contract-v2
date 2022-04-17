@@ -5,7 +5,9 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -200,10 +202,10 @@ swapValidator Swap{..} r SwapScriptContext{aScriptContextTxInfo = SwapTxInfo{..}
       Nothing -> False
       Just d -> d `before` atxInfoValidRange
 
-    convertDatum :: Datum -> Swap
-    convertDatum d = case PlutusTx.fromBuiltinData (getDatum d) of
-      Nothing -> TRACE_ERROR("found datum that is not a swap")
-      Just !x -> x
+    convertDatum :: forall a. DataConstraint(a) => Datum -> a
+    convertDatum d =
+      let a = getDatum d
+       in FROM_BUILT_IN_DATA("found datum that is not a swap", a)
 
     allSwaps :: [Swap]
     allSwaps = fmap (\(_, d) -> convertDatum d) atxInfoData
