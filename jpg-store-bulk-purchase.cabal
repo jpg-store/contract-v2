@@ -81,6 +81,7 @@ executable integration-tests
     , plutus-ledger
     , plutus-ledger-api
     , process
+    , time
     , temporary
     , test-mint-scripts
     , text

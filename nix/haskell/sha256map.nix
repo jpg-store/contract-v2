@@ -16,6 +16,6 @@
   "https://github.com/input-output-hk/cardano-addresses"."d2f86caa085402a953920c6714a0de6a50b655ec" = "0p6jbnd7ky2yf7bwb1350k8880py8dgqg39k49q02a6ij4ld01ay";
   "https://github.com/input-output-hk/ekg-forward"."d9e8fd302fa6ba41c07183d371e6777286d37bc2" = "0s8cblhq3i528jj7r7yd4v82nqzafj8vrgf0y80l7saxc3a5f2lk";
   "https://github.com/input-output-hk/flat"."ee59880f47ab835dbd73bea0847dab7869fc20d8" = "1lrzknw765pz2j97nvv9ip3l1mcpf2zr4n56hwlz0rk7wq7ls4cm";
-  "https://github.com/purefn/cardano-transaction-builder"."9d8704468b7b66554ade4d07a9c0a280185d8d94" = "0dchyxqxjjn0qa2pg2rbcm9nfwp44qk4fxcc8132fslkrqbc2lxi";
+  "https://github.com/purefn/cardano-transaction-builder"."263c3acfc9809ef346d8c1f33a1ee2df0e238b5c" = "1gvrha86qjvrakismzn749gax9wgz5f2bbkmyhgx1jvmk5k8cnwg";
   "https://github.com/purefn/test-mint-scripts"."0627ce4815bb9fd0c60c39f0f622110b13df24b2" = "121w48k3ndj1hais3nb0n56jiq018vkj2bcmay946w32mvfkcvv7";
 }
