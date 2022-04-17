@@ -27,7 +27,6 @@ import qualified Data.ByteString.Short as SBS
 import Ledger
   (Datum(..), DatumHash, POSIXTime, POSIXTimeRange, PubKeyHash, after, before, mkValidatorScript)
 import qualified Ledger.Typed.Scripts as Scripts
-import Plutus.V1.Ledger.Contexts
 import Plutus.V1.Ledger.Credential
 import Plutus.V1.Ledger.Value
 import PlutusTx
@@ -46,11 +45,11 @@ data SwapAddress = SwapAddress
 data SwapTxOut = SwapTxOut
   { atxOutAddress :: SwapAddress
   , atxOutValue :: Value
-  , atxOutDatumHash :: Maybe DatumHash
+  , atxOutDatumHash :: BuiltinData
   }
 
 data SwapTxInInfo = SwapTxInInfo
-  { atxInInfoOutRef :: TxOutRef
+  { atxInInfoOutRef :: BuiltinData
   , atxInInfoResolved :: SwapTxOut
   }
 
@@ -58,7 +57,7 @@ data SwapTxInfo = SwapTxInfo
   { atxInfoInputs :: [SwapTxInInfo]
   , atxInfoOutputs :: [SwapTxOut]
   , atxInfoFee :: BuiltinData
-  , atxInfoMint :: Value
+  , atxInfoMint :: BuiltinData
   , atxInfoDCert :: BuiltinData
   , atxInfoWdrl :: BuiltinData
   , atxInfoValidRange :: POSIXTimeRange
@@ -67,11 +66,9 @@ data SwapTxInfo = SwapTxInfo
   , atxInfoId :: BuiltinData
   }
 
-data SwapScriptPurpose = ASpending TxOutRef
-
 data SwapScriptContext = SwapScriptContext
   { aScriptContextTxInfo :: SwapTxInfo
-  , aScriptContextPurpose :: SwapScriptPurpose
+  , aScriptContextPurpose :: BuiltinData
   }
 
 valuePaidTo' :: [SwapTxOut] -> PubKeyHash -> Value
@@ -86,7 +83,6 @@ pubKeyOutputsAt' pk outs =
     flt _ = Nothing
   in mapMaybe flt outs
 
-makeIsDataIndexed  ''SwapScriptPurpose [('ASpending,1)]
 unstableMakeIsData ''SwapTxInfo
 unstableMakeIsData ''SwapScriptContext
 unstableMakeIsData ''SwapAddress
@@ -127,20 +123,17 @@ isScriptAddress SwapAddress { aaddressCredential } = case aaddressCredential of
   ScriptCredential _ -> True
   _ -> False
 
-payoutToInequality :: Payout -> (PubKeyHash, Value)
-payoutToInequality Payout {..} = (pAddress, pValue)
+mapInsertWith :: Eq k => (a -> a -> a) -> k -> a -> Map k a -> Map k a
+mapInsertWith f k v xs = case M.lookup k xs of
+  Nothing -> M.insert k v xs
+  Just v' -> M.insert k (f v v') xs
 
-mergePayoutsValue :: [Payout] -> Value
-mergePayoutsValue = foldr (\x acc -> pValue x <> acc) mempty
+mergePayouts :: Payout -> Map PubKeyHash Value -> Map PubKeyHash Value
+mergePayouts Payout {..} =
+  mapInsertWith (+) pAddress pValue
 
-paidAtleastTo :: SwapTxInfo -> PubKeyHash -> Value -> Bool
-paidAtleastTo info pkh val = valuePaidTo' (atxInfoOutputs info) pkh `geq` val
-
-mergeInequalities :: Map PubKeyHash Value -> Map PubKeyHash Value -> Map PubKeyHash Value
-mergeInequalities = M.unionWith (+)
-
-mergeAll :: [Map PubKeyHash Value] -> Map PubKeyHash Value
-mergeAll = foldr mergeInequalities M.empty
+paidAtleastTo :: [SwapTxOut] -> PubKeyHash -> Value -> Bool
+paidAtleastTo outputs pkh val = valuePaidTo' outputs pkh `geq` val
 
 -------------------------------------------------------------------------------
 -- Boilerplate
@@ -162,11 +155,9 @@ instance Eq Swap where
 instance Eq Redeemer where
   x == y = case (x, y) of
     (Buy, Buy) -> True
-    (Buy, _) -> False
     (Cancel, Cancel) -> True
-    (Cancel, _) -> False
     (Close, Close) -> True
-    (Close, _) -> False
+    _ -> False
 
 PlutusTx.unstableMakeIsData ''Payout
 PlutusTx.unstableMakeIsData ''Swap
@@ -177,19 +168,17 @@ PlutusTx.unstableMakeIsData ''Redeemer
 -------------------------------------------------------------------------------
 -- check that each user is paid
 -- and the total is correct
-validateOutputConstraints :: SwapTxInfo -> Map PubKeyHash Value -> Bool
-validateOutputConstraints info constraints = all (uncurry (paidAtleastTo info)) $ M.toList constraints
+-- validateOutputConstraints :: SwapTxInfo -> Map PubKeyHash Value -> Bool
+validateOutputConstraints :: [SwapTxOut] -> Map PubKeyHash Value -> Bool
+validateOutputConstraints outputs constraints = all (\(pkh, v) -> paidAtleastTo outputs pkh v) (M.toList constraints)
 
 -- Every branch but user initiated cancel requires checking the input
 -- to ensure there is only one script input.
 swapValidator :: Swap -> Redeemer -> SwapScriptContext -> Bool
-swapValidator s r ctx =
+swapValidator Swap{..} r SwapScriptContext{aScriptContextTxInfo = SwapTxInfo{..}} =
   let
-    info :: SwapTxInfo
-    info = aScriptContextTxInfo ctx
-
     singleSigner :: PubKeyHash
-    singleSigner = case atxInfoSignatories info of
+    singleSigner = case atxInfoSignatories of
       [x] -> x
       _ -> TRACE_ERROR("single signer expected")
 
@@ -198,49 +187,52 @@ swapValidator s r ctx =
     validScriptInputs =
       let
         isScriptInput :: SwapTxInInfo -> Bool
-        isScriptInput = isScriptAddress . atxOutAddress . atxInInfoResolved
-      in any (not . isScriptInput) . atxInfoInputs $ info
+        isScriptInput txIn = isScriptAddress (atxOutAddress  (atxInInfoResolved txIn))
+      in any (\x -> not (isScriptInput x)) atxInfoInputs
 
     isBeforeDeadline :: Bool
-    isBeforeDeadline = case sDeadline s of
+    isBeforeDeadline = case sDeadline of
       Nothing -> True
-      Just d -> d `after` atxInfoValidRange info
+      Just d -> d `after` atxInfoValidRange
 
     isAfterDeadline :: Bool
-    isAfterDeadline = case sDeadline s of
+    isAfterDeadline = case sDeadline of
       Nothing -> False
-      Just d -> d `before` atxInfoValidRange info
-
+      Just d -> d `before` atxInfoValidRange
 
     convertDatum :: Datum -> Swap
-    convertDatum d = case PlutusTx.fromBuiltinData . getDatum $ d of
+    convertDatum d = case PlutusTx.fromBuiltinData (getDatum d) of
       Nothing -> TRACE_ERROR("found datum that is not a swap")
       Just !x -> x
 
     allSwaps :: [Swap]
-    allSwaps = fmap (convertDatum . snd) . atxInfoData $ info
+    allSwaps = fmap (\(_, d) -> convertDatum d) atxInfoData
 
     outputsAreValid :: [Payout] -> Bool
-    outputsAreValid = validateOutputConstraints info . mergeAll . map (uncurry M.singleton . payoutToInequality)
+    outputsAreValid payouts =
+      validateOutputConstraints
+        atxInfoOutputs
+        (foldr mergePayouts M.empty payouts)
+
   in TRACE_IF_FALSE("invalid script inputs", validScriptInputs) && case r of
-    Cancel -> TRACE_IF_FALSE("not signed by owner", (singleSigner == sOwner s))
-    Close -> case sDeadline s of
+    Cancel -> TRACE_IF_FALSE("not signed by owner", (singleSigner == sOwner))
+    Close -> case sDeadline of
       Nothing -> TRACE_ERROR("swap has no deadline")
       Just _ ->
         let
           -- assume all redeemers are Close and all the assets are going back to their owner
           assetsReturnedToOwner :: Bool
-          assetsReturnedToOwner = outputsAreValid . flip fmap allSwaps $ \s' -> Payout (sOwner s') (sSwapValue s')
+          assetsReturnedToOwner = outputsAreValid (fmap (\Swap{sOwner=o, sSwapValue=v} -> Payout o v) allSwaps)
         in TRACE_IF_FALSE("before the deadline", isAfterDeadline) && TRACE_IF_FALSE("wrong output", assetsReturnedToOwner)
     Buy ->
       let
         -- assume all redeemers are buys, all the payouts should be paid, and the assets should go to the tx signer (aka the buyer)
         assets :: Value
         sellerPayouts :: [Payout]
-        (assets, sellerPayouts) = flip foldMap allSwaps $ \s' -> (sSwapValue s', sSwapPayouts s')
+        (assets, sellerPayouts) = foldr (\Swap{sSwapValue=v, sSwapPayouts=ps} (av, aps) -> (av + v, ps ++ aps)) (mempty, []) allSwaps
 
         assetsPaidToBuyer :: Bool
-        assetsPaidToBuyer = paidAtleastTo info singleSigner assets
+        assetsPaidToBuyer = paidAtleastTo atxInfoOutputs singleSigner assets
 
         payoutsToSeller :: Bool
         payoutsToSeller = outputsAreValid sellerPayouts
