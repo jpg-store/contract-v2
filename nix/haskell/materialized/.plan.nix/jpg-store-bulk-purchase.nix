@@ -69,7 +69,9 @@
           };
         "integration-tests" = {
           depends = [
+            (hsPkgs."aeson" or (errorHandler.buildDepError "aeson"))
             (hsPkgs."base" or (errorHandler.buildDepError "base"))
+            (hsPkgs."bytestring" or (errorHandler.buildDepError "bytestring"))
             (hsPkgs."cardano-api" or (errorHandler.buildDepError "cardano-api"))
             (hsPkgs."cardano-transaction" or (errorHandler.buildDepError "cardano-transaction"))
             (hsPkgs."containers" or (errorHandler.buildDepError "containers"))
@@ -84,8 +86,10 @@
             (hsPkgs."plutus-ledger" or (errorHandler.buildDepError "plutus-ledger"))
             (hsPkgs."plutus-ledger-api" or (errorHandler.buildDepError "plutus-ledger-api"))
             (hsPkgs."process" or (errorHandler.buildDepError "process"))
+            (hsPkgs."time" or (errorHandler.buildDepError "time"))
             (hsPkgs."temporary" or (errorHandler.buildDepError "temporary"))
             (hsPkgs."test-mint-scripts" or (errorHandler.buildDepError "test-mint-scripts"))
+            (hsPkgs."text" or (errorHandler.buildDepError "text"))
             ];
           buildable = true;
           hsSourceDirs = [ "integration-tests" ];
