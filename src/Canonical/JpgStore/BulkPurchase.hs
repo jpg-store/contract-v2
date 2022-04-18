@@ -27,7 +27,7 @@ import Codec.Serialise (serialise)
 import qualified Data.ByteString.Lazy as LB
 import qualified Data.ByteString.Short as SBS
 import Ledger
-  (Datum(..), DatumHash, POSIXTime, POSIXTimeRange, PubKeyHash, after, before, mkValidatorScript)
+  (Datum(..), DatumHash, POSIXTime, POSIXTimeRange, PubKeyHash, TxOutRef, after, before, mkValidatorScript)
 import qualified Ledger.Typed.Scripts as Scripts
 import Plutus.V1.Ledger.Credential
 import Plutus.V1.Ledger.Value
@@ -37,6 +37,8 @@ import PlutusTx.AssocMap (Map)
 import PlutusTx.Prelude
 import Prelude (IO, print, putStrLn)
 import System.FilePath
+
+#define DEBUG
 #include "../DebugUtilities.h"
 
 data SwapAddress = SwapAddress
@@ -51,7 +53,7 @@ data SwapTxOut = SwapTxOut
   }
 
 data SwapTxInInfo = SwapTxInInfo
-  { atxInInfoOutRef :: BuiltinData
+  { atxInInfoOutRef :: TxOutRef
   , atxInInfoResolved :: SwapTxOut
   }
 
@@ -68,9 +70,12 @@ data SwapTxInfo = SwapTxInfo
   , atxInfoId :: BuiltinData
   }
 
+data SwapScriptPurpose
+    = ASpending TxOutRef
+
 data SwapScriptContext = SwapScriptContext
   { aScriptContextTxInfo :: SwapTxInfo
-  , aScriptContextPurpose :: BuiltinData
+  , aScriptContextPurpose :: SwapScriptPurpose
   }
 
 valuePaidTo' :: [SwapTxOut] -> PubKeyHash -> Value
@@ -87,6 +92,7 @@ pubKeyOutputsAt' pk outs =
 
 unstableMakeIsData ''SwapTxInfo
 unstableMakeIsData ''SwapScriptContext
+makeIsDataIndexed  ''SwapScriptPurpose [('ASpending,1)]
 unstableMakeIsData ''SwapAddress
 unstableMakeIsData ''SwapTxOut
 unstableMakeIsData ''SwapTxInInfo
@@ -124,6 +130,9 @@ isScriptAddress :: SwapAddress -> Bool
 isScriptAddress SwapAddress { aaddressCredential } = case aaddressCredential of
   ScriptCredential _ -> True
   _ -> False
+
+isScriptInput :: SwapTxInInfo -> Bool
+isScriptInput txIn = isScriptAddress (atxOutAddress  (atxInInfoResolved txIn))
 
 mapInsertWith :: Eq k => (a -> a -> a) -> k -> a -> Map k a -> Map k a
 mapInsertWith f k v xs = case M.lookup k xs of
@@ -170,14 +179,13 @@ PlutusTx.unstableMakeIsData ''Redeemer
 -------------------------------------------------------------------------------
 -- check that each user is paid
 -- and the total is correct
--- validateOutputConstraints :: SwapTxInfo -> Map PubKeyHash Value -> Bool
 validateOutputConstraints :: [SwapTxOut] -> Map PubKeyHash Value -> Bool
 validateOutputConstraints outputs constraints = all (\(pkh, v) -> paidAtleastTo outputs pkh v) (M.toList constraints)
 
 -- Every branch but user initiated cancel requires checking the input
 -- to ensure there is only one script input.
 swapValidator :: Swap -> Redeemer -> SwapScriptContext -> Bool
-swapValidator Swap{..} r SwapScriptContext{aScriptContextTxInfo = SwapTxInfo{..}} =
+swapValidator _ r SwapScriptContext{aScriptContextTxInfo = SwapTxInfo{..}, aScriptContextPurpose = ASpending thisOutRef} =
   let
     singleSigner :: PubKeyHash
     singleSigner = case atxInfoSignatories of
@@ -187,60 +195,53 @@ swapValidator Swap{..} r SwapScriptContext{aScriptContextTxInfo = SwapTxInfo{..}
     -- Verify that the script inputs are all for this script
     validScriptInputs :: Bool
     validScriptInputs =
-      let
-        isScriptInput :: SwapTxInInfo -> Bool
-        isScriptInput txIn = isScriptAddress (atxOutAddress  (atxInInfoResolved txIn))
-      in any (\x -> not (isScriptInput x)) atxInfoInputs
-
-    isBeforeDeadline :: Bool
-    isBeforeDeadline = case sDeadline of
-      Nothing -> True
-      Just d -> d `after` atxInfoValidRange
-
-    isAfterDeadline :: Bool
-    isAfterDeadline = case sDeadline of
-      Nothing -> False
-      Just d -> d `before` atxInfoValidRange
+      any (\x -> not (isScriptInput x)) atxInfoInputs
 
     convertDatum :: forall a. DataConstraint(a) => Datum -> a
     convertDatum d =
       let a = getDatum d
        in FROM_BUILT_IN_DATA("found datum that is not a swap", a)
 
-    allSwaps :: [Swap]
-    allSwaps = fmap (\(_, d) -> convertDatum d) atxInfoData
+    swaps :: [Swap]
+    swaps = fmap (\(_, d) -> convertDatum d) atxInfoData
 
-    outputsAreValid :: [Payout] -> Bool
-    outputsAreValid payouts =
-      validateOutputConstraints
-        atxInfoOutputs
-        (foldr mergePayouts M.empty payouts)
+    outputsAreValid :: Map PubKeyHash Value -> Bool
+    outputsAreValid = validateOutputConstraints atxInfoOutputs
 
-  in TRACE_IF_FALSE("invalid script inputs", validScriptInputs) && case r of
-    Cancel -> TRACE_IF_FALSE("not signed by owner", (singleSigner == sOwner))
-    Close -> case sDeadline of
-      Nothing -> TRACE_ERROR("swap has no deadline")
-      Just _ ->
+    foldSwaps :: (Swap -> a -> a) -> a -> a
+    foldSwaps f init = foldr f init swaps
+
+  in if atxInInfoOutRef (head (filter isScriptInput atxInfoInputs)) /= thisOutRef then True else
+    TRACE_IF_FALSE("invalid script inputs", validScriptInputs) && case r of
+      Cancel ->
         let
-          -- assume all redeemers are Close and all the assets are going back to their owner
-          assetsReturnedToOwner :: Bool
-          assetsReturnedToOwner = outputsAreValid (fmap (\Swap{sOwner=o, sSwapValue=v} -> Payout o v) allSwaps)
-        in TRACE_IF_FALSE("before the deadline", isAfterDeadline) && TRACE_IF_FALSE("wrong output", assetsReturnedToOwner)
-    Buy ->
-      let
-        -- assume all redeemers are buys, all the payouts should be paid, and the assets should go to the tx signer (aka the buyer)
-        assets :: Value
-        sellerPayouts :: [Payout]
-        (assets, sellerPayouts) = foldr (\Swap{sSwapValue=v, sSwapPayouts=ps} (av, aps) -> (av + v, ps ++ aps)) (mempty, []) allSwaps
+          signerIsOwner Swap{sOwner} = singleSigner == sOwner
+        in
+          TRACE_IF_FALSE("signer is not the owner", (all signerIsOwner swaps))
+      Close ->
+        -- assume all redeemers are Close and all the assets are going back to their owner
+        let
+          f Swap{..} payouts =
+            case sDeadline of
+              Nothing -> TRACE_ERROR("swap has no deadline")
+              Just deadline | deadline `before` atxInfoValidRange -> mergePayouts (Payout sOwner sSwapValue) payouts
+              Just _ -> TRACE_ERROR("deadline not passed")
 
-        assetsPaidToBuyer :: Bool
-        assetsPaidToBuyer = paidAtleastTo atxInfoOutputs singleSigner assets
+          assets :: Map PubKeyHash Value
+          assets = foldSwaps f mempty
+        in
+          TRACE_IF_FALSE("wrong output", (outputsAreValid assets))
+      Buy ->
+        let
+          accumPayouts Swap{sSwapValue, sSwapPayouts, sDeadline} acc =
+            if all (`after` atxInfoValidRange) sDeadline
+              then foldr mergePayouts acc (Payout singleSigner sSwapValue : sSwapPayouts)
+              else TRACE_ERROR("deadline is passed")
 
-        payoutsToSeller :: Bool
-        payoutsToSeller = outputsAreValid sellerPayouts
-      in TRACE_IF_FALSE("deadline passed", isBeforeDeadline)
-        && TRACE_IF_FALSE("wrong buyer output", assetsPaidToBuyer)
-        && TRACE_IF_FALSE("wrong payouts", payoutsToSeller)
+          -- assume all redeemers are buys, all the payouts should be paid, and the assets should go to the tx signer (aka the buyer)
+          payouts :: Map PubKeyHash Value
+          payouts = foldSwaps accumPayouts mempty
+        in TRACE_IF_FALSE("wrong output", (outputsAreValid payouts))
 
 -------------------------------------------------------------------------------
 -- Entry Points

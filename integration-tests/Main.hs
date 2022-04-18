@@ -23,12 +23,10 @@ import Data.List.Extra
 import qualified Data.Map as Map
 import Data.String
 import qualified Data.Text as Text
-import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Traversable
 import Env
 import Ledger (POSIXTime, PubKeyHash)
 import Plutus.V1.Ledger.Ada
-import Plutus.V1.Ledger.Time (fromMilliSeconds)
 import qualified Plutus.V1.Ledger.Value as Value
 import System.Directory
 import System.Exit
@@ -124,16 +122,27 @@ policy4 = (!! 3)
 
 runTests :: Config -> IO ()
 runTests config = do
-  expiredDeadline <- liftIO $ (5000 -) . fromMilliSeconds . round . (* 1000) <$> getPOSIXTime
+  let
+    expiredDeadline = 0
+    expiresInYear3000 = 32503680000
+
   hspec $ aroundAllWith (createResources config) $ do
     describe "single offer" $ do
-      aroundWith (createSwaps config [swapSpec seller1 policy1]) $ do
+      context "without expiration" $ do
+        aroundWith (createSwaps config [swapSpec seller1 policy1]) $ do
+          it "can be purchased" $ \(resources, swaps) -> evalBuys config resources swaps buyer
 
-        it "can be purchased" $ \(resources, swaps) -> evalBuys config resources swaps buyer
+          it "can be cancelled by owner" $ \(resources, swaps) -> evalCancelSwaps config resources swaps seller1
 
-        it "can be cancelled by owner" $ \(resources, swaps) -> evalCancelSwaps config resources swaps seller1
+          it "cannot be closed"
+            $ \(resources, swaps) -> evalCloseSwaps config resources swaps marketplace `shouldThrow` isTxException
 
-        context "without expiration" $ do
+      context "with future expiration" $ do
+        aroundWith (createSwaps config [(swapSpec seller1 policy1) { specDeadline = Just expiresInYear3000 }]) $ do
+          it "can be purchased" $ \(resources, swaps) -> evalBuys config resources swaps buyer
+
+          it "can be cancelled by owner" $ \(resources, swaps) -> evalCancelSwaps config resources swaps seller1
+
           it "cannot be closed"
             $ \(resources, swaps) -> evalCloseSwaps config resources swaps marketplace `shouldThrow` isTxException
 
@@ -277,6 +286,8 @@ evalBuys config@Config {..} Resources {..} swaps buyerW = do
 
     void $ selectCollateralInput buyerAddr
     void $ balanceNonAdaAssets buyerAddr
+    start <- currentSlot
+    timerange start (start + 100)
     changeAddress buyerAddr
     sign . walletSkeyPath . buyerW $ rWallets
 
