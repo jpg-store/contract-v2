@@ -1,0 +1,5 @@
+export CARDANO_NODE_SOCKET_PATH="$HOME/prototypes/cardano-private-testnet-setup/private-testnet/node-bft1/node.sock"
+export SOURCE_WALLET_ADDRESS_PATH=$HOME/prototypes/cardano-private-testnet-setup/private-testnet/addresses/user1.addr
+export SOURCE_WALLET_SKEY_PATH=$HOME/prototypes/cardano-private-testnet-setup/private-testnet/addresses/user1.skey
+export TESTNET_MAGIC=42
+export WALLET_DIR=$PWD/temp/private-testnet

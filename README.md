@@ -1,3 +1,15 @@
+# jpg.store Bulk Purchase Contract
+
+## Assets
+
+The Plutus Core and script addresses for testnet and mainnet are checked in the `assets` folder.
+
+- `assets/swap.plutus`
+- `assets/testnet/swap.addr`
+- `assets/mainnet/swap.addr`
+
+## Specification
+
 Multiple sellers can list one or more assets in a lock transaction.
 
 A buyer can buy one or more asset bundles from multiple buyers.
@@ -84,7 +96,7 @@ After compiling the smart contract, it is necessary to make a script address.
 Next, run:
 
 ```bash
-cabal run create-smart-contract -- swap.plutus
+scripts/compile.sh
 ```
 
 ## Example Transactions
@@ -120,10 +132,27 @@ export TESTNET_MAGIC=1097911063
 
 Set `TESTNET_MAGIC` if you are using a testnet. Otherwise, mainnet will be assumed.
 
+### Environment Variable Files
+
+To make setting the environment variables easier, there are three environment variable files you can source.
+
+However, the paths to the `cardano-node` socket might need to be modified to work on your system.
+
+The three files are:
+- `scripts/envars/local-testnet.envs`
+- `scripts/envars/testnet.envs`
+- `scripts/envars/mainnet.envs`
+
+To source them run:
+
+```bash
+source scripts/envars/testnet.envs
+```
+
+### Actually Running the Tests
+
 To run the tests run
 
 ```bash
 cabal run integration-tests
 ```
-
-

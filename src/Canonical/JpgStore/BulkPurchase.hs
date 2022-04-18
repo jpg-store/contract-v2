@@ -38,7 +38,6 @@ import PlutusTx.Prelude
 import Prelude (IO, print, putStrLn)
 import System.FilePath
 
-#define DEBUG
 #include "../DebugUtilities.h"
 
 data SwapAddress = SwapAddress
@@ -190,7 +189,7 @@ swapValidator _ r SwapScriptContext{aScriptContextTxInfo = SwapTxInfo{..}, aScri
     singleSigner :: PubKeyHash
     singleSigner = case atxInfoSignatories of
       [x] -> x
-      _ -> TRACE_ERROR("single signer expected")
+      _ -> TRACE_ERROR("single signer expected", "1")
 
     -- Verify that the script inputs are all for this script
     validScriptInputs :: Bool
@@ -200,7 +199,7 @@ swapValidator _ r SwapScriptContext{aScriptContextTxInfo = SwapTxInfo{..}, aScri
     convertDatum :: forall a. DataConstraint(a) => Datum -> a
     convertDatum d =
       let a = getDatum d
-       in FROM_BUILT_IN_DATA("found datum that is not a swap", a)
+       in FROM_BUILT_IN_DATA("found datum that is not a swap", "2", a)
 
     swaps :: [Swap]
     swaps = fmap (\(_, d) -> convertDatum d) atxInfoData
@@ -212,36 +211,36 @@ swapValidator _ r SwapScriptContext{aScriptContextTxInfo = SwapTxInfo{..}, aScri
     foldSwaps f init = foldr f init swaps
 
   in if atxInInfoOutRef (head (filter isScriptInput atxInfoInputs)) /= thisOutRef then True else
-    TRACE_IF_FALSE("invalid script inputs", validScriptInputs) && case r of
+    TRACE_IF_FALSE("invalid script inputs", "3", validScriptInputs) && case r of
       Cancel ->
         let
           signerIsOwner Swap{sOwner} = singleSigner == sOwner
         in
-          TRACE_IF_FALSE("signer is not the owner", (all signerIsOwner swaps))
+          TRACE_IF_FALSE("signer is not the owner", "4", (all signerIsOwner swaps))
       Close ->
         -- assume all redeemers are Close and all the assets are going back to their owner
         let
           f Swap{..} payouts =
             case sDeadline of
-              Nothing -> TRACE_ERROR("swap has no deadline")
+              Nothing -> TRACE_ERROR("swap has no deadline", "5")
               Just deadline | deadline `before` atxInfoValidRange -> mergePayouts (Payout sOwner sSwapValue) payouts
-              Just _ -> TRACE_ERROR("deadline not passed")
+              Just _ -> TRACE_ERROR("deadline not passed", "6")
 
           assets :: Map PubKeyHash Value
           assets = foldSwaps f mempty
         in
-          TRACE_IF_FALSE("wrong output", (outputsAreValid assets))
+          TRACE_IF_FALSE("wrong output", "7", (outputsAreValid assets))
       Buy ->
         let
           accumPayouts Swap{sSwapValue, sSwapPayouts, sDeadline} acc =
             if all (`after` atxInfoValidRange) sDeadline
               then foldr mergePayouts acc (Payout singleSigner sSwapValue : sSwapPayouts)
-              else TRACE_ERROR("deadline is passed")
+              else TRACE_ERROR("deadline is passed", "8")
 
           -- assume all redeemers are buys, all the payouts should be paid, and the assets should go to the tx signer (aka the buyer)
           payouts :: Map PubKeyHash Value
           payouts = foldSwaps accumPayouts mempty
-        in TRACE_IF_FALSE("wrong output", (outputsAreValid payouts))
+        in TRACE_IF_FALSE("wrong output", "9", (outputsAreValid payouts))
 
 -------------------------------------------------------------------------------
 -- Entry Points

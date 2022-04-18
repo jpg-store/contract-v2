@@ -89,7 +89,7 @@ data Resources = Resources
   }
   deriving Show
 
-data TestException = SetupException | TxException IOException
+data TestException = SetupException String | TxException IOException
   deriving (Show, Eq)
 
 instance Exception TestException
@@ -367,7 +367,7 @@ createSwap config@Config {..} wallet@Wallet {..} policy payouts deadline = do
     txValue <- evalMint config wallet policy "123456" 1
     waitForNextBlock cTestnetMagic
 
-    handle @SomeException (\_ -> throwIO SetupException) . eval cTestnetMagic cProtocolParams $ do
+    handle @SomeException (\_ -> throwIO $ SetupException "createSwap") . eval cTestnetMagic cProtocolParams $ do
       outputWithHash cScriptAddr ("5000000 lovelace" <> txValue) swapDatum
       void $ selectInputs "7000000 lovelace" walletAddr
       changeAddress walletAddr
@@ -389,7 +389,7 @@ encodedTokenName =
 evalMint :: Config -> Wallet -> Policy -> String -> Integer -> IO TxBuilder.Value
 evalMint Config { cTestnetMagic, cProtocolParams } Wallet { walletAddr, walletSkeyPath } policy token n = do
   let txValue = TxBuilder.Value . Map.singleton (policyId policy) . Map.singleton (encodedTokenName token) $ n
-  handle @SomeException (\_ -> throwIO SetupException) . eval cTestnetMagic cProtocolParams $ do
+  handle @SomeException (\e -> throwIO $ SetupException $ "evalMint " <> show e) . eval cTestnetMagic cProtocolParams $ do
     mint txValue (policyFile policy) ([] @Int)
 
     void $ output walletAddr ("1758582 lovelace" <> txValue)
@@ -452,7 +452,7 @@ withWallets config@Config {..} runTest =
           <*> createWallet' "royalties"
 
         unless (null newAddrs) $ do
-          handle @SomeException (\_ -> throwIO SetupException) . eval cTestnetMagic cProtocolParams $ do
+          handle @SomeException (\_ -> throwIO $ SetupException "withWallets") . eval cTestnetMagic cProtocolParams $ do
             values <- traverse (\addr -> fmap oValue . output addr $ "100000000 lovelace") newAddrs
 
             srcAddr <- liftIO . fmap trim . readFile $ cSourceWalletAddressPath
@@ -494,4 +494,3 @@ createWallet Config {..} name = do
     <$> readProcess "cardano-cli" ["address", "key-hash", "--payment-verification-key-file", vkeyFile] mempty
 
   pure $ Wallet skeyFile addr pkh
-

@@ -1,0 +1,5 @@
+export CARDANO_NODE_SOCKET_PATH="/Users/$USER/Library/Application Support/Daedalus Mainnet/cardano-node.socket"
+export SOURCE_WALLET_ADDRESS_PATH=$HOME/mainnet/user1.addr
+export SOURCE_WALLET_SKEY_PATH=$HOME/mainnet/user1.skey
+unset TESTNET_MAGIC
+export WALLET_DIR=$PWD/temp/mainnet
