@@ -124,7 +124,7 @@ runTests :: Config -> IO ()
 runTests config = do
   let
     expiredDeadline = 0
-    expiresInYear3000 = 32503680000
+    expiresInYear3000 = 3250368000000
 
   hspec $ aroundAllWith (createResources config) $ do
     describe "single offer" $ do
@@ -137,7 +137,7 @@ runTests config = do
           it "cannot be closed"
             $ \(resources, swaps) -> evalCloseSwaps config resources swaps marketplace `shouldThrow` isTxException
 
-      context "with future expiration" $ do
+      context "that has *not* expired" $ do
         aroundWith (createSwaps config [(swapSpec seller1 policy1) { specDeadline = Just expiresInYear3000 }]) $ do
           it "can be purchased" $ \(resources, swaps) -> evalBuys config resources swaps buyer
 
@@ -162,22 +162,11 @@ runTests config = do
           it "can be cancelled in bulk" $ \(resources, swaps) -> do
             evalCancelSwaps config resources swaps seller1
 
-    describe "multiple offers" $ do
       context "from multiple sellers" $ do
         context "that have no expiration" $ do
           aroundWith (createSwaps config [swapSpec seller1 policy1, swapSpec seller2 policy3]) $ do
             it "cannot be cancelled in bulk" $ \(resources, swaps) -> do
               evalCancelSwaps config resources swaps seller1 `shouldThrow` isTxException
-
-            -- xit "cannot mix buys and cancels" $ \_ -> do
-            --   error "not implemented" :: IO ()
-
-            -- xit "cannot mix buys and emergency cancels" $ \_ -> do
-            --   error "not implemented" :: IO ()
-
-            -- xit "cannot mix buys and closes" $ \_ -> do
-            --   error "not implemented" :: IO ()
-
 
             it "can be purchased in bulk" $ \(resources, swaps) -> do
               evalBuys config resources swaps buyer
@@ -191,7 +180,6 @@ runTests config = do
                 ]
               )
             $ do
-
                 it "cannot be purchased"
                   $ \(resources, swaps) -> evalBuys config resources swaps buyer `shouldThrow` isTxException
 

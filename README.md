@@ -81,41 +81,49 @@ implications of the above:
 
 After compiling the smart contract, it is necessary to make a script address.
 
-First source either the testnet or mainnet environment variables.
-
-For testnet
-
-```
-$ source scripts/envars/testnet-env.envars
-```
-
-For mainnet
-
-```
-$ source scripts/envars/mainnet-env.envars
-```
-
-The environment variable files set `CARDANO_NODE_SOCKET_PATH` to the path of the appropriate Daedalus socket file (either Testnet Daedalus or the regular mainnet Daedalus). It you run a `cardano-node` on your own you should set this environment variable to your socket file location after sourcing the environment variable file.
-
-First create the wallets and get the protocol parameters.
-
-```
-$ ./scripts/wallets/make-all-wallets.sh
-$ ./scripts/query-protocol-parameters.sh
-```
-
 Next, run:
 
 ```bash
-scripts/compile.sh
+cabal run create-smart-contract -- swap.plutus
 ```
-
-This will make the files `scripts/testnet/escrow.addr` or `scripts/mainnet/escrow.addr`.
 
 ## Example Transactions
 
-The folder `scripts/core` has parameterized example transactions. These are used by the wrappers in `scripts/happy-path` and `scripts/failure-cases`. The various transactions are combined in test scripts in the folder `scripts/tests`.
+The `integration-tests/Main.hs` file has example transactions of various kinds.
 
 ## Running the Tests
 
-To run the tests run `scripts/tests/all.sh`
+Before running the tests you need to set up environment variables.
+
+```bash
+export CARDANO_NODE_SOCKET_PATH=<your node path>
+```
+
+Set `CARDANO_NODE_SOCKET_PATH` to the path of the appropriate Daedalus socket file (either Testnet Daedalus or the regular mainnet Daedalus). It you run a `cardano-node` on your own you should set this environment variable to your socket file location.
+
+```bash
+export WALLET_DIR=<dir with wallet skey and vkey files>
+```
+
+Set `WALLET_DIR` to a directory which contains the signing key files and verification key files of the wallets for `seller1`, `seller2`, `buyer`, `marketplace`, and `royalities` wallets. If the file `$WALLET_DIR/<name>.vkey` does not exist, a new wallet will be created and 100 ada transferred to it. If the `WALLET_DIR` is not set, a temporary directory will be used.
+
+```bash
+export SOURCE_WALLET_ADDRESS_PATH=<path to user addr file>
+export SOURCE_WALLET_SKEY_PATH=<path to user skey file>
+```
+
+Set `SOURCE_WALLET_ADDRESS_PATH` and `SOURCE_WALLET_SKEY_PATH` to the files containing the wallet address and signing key that will be used as a source of funds for any newly created wallets. These are required, but if the `WALLET_DIR` is set and all the wallets already exist, they will not be used.
+
+```bash
+export TESTNET_MAGIC=1097911063
+```
+
+Set `TESTNET_MAGIC` if you are using a testnet. Otherwise, mainnet will be assumed.
+
+To run the tests run
+
+```bash
+cabal run integration-tests
+```
+
+
