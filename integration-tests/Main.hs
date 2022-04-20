@@ -89,8 +89,8 @@ data Resources = Resources
   }
   deriving Show
 
-data TestException = SetupException String | TxException IOException
-  deriving (Show, Eq)
+data TestException = SetupException String | TxException SomeException
+  deriving (Show)
 
 instance Exception TestException
 
@@ -135,7 +135,8 @@ runTests config = do
           it "can be cancelled by owner" $ \(resources, swaps) -> evalCancelSwaps config resources swaps seller1
 
           it "cannot be closed"
-            $ \(resources, swaps) -> evalCloseSwaps config resources swaps marketplace `shouldThrow` isTxException
+            $ \(resources, swaps) -> evalCloseSwaps config resources swaps marketplace
+              `shouldThrow` isTxException
 
       context "that has *not* expired" $ do
         aroundWith (createSwaps config [(swapSpec seller1 policy1) { specDeadline = Just expiresInYear3000 }]) $ do
@@ -259,7 +260,12 @@ evalBuys config@Config {..} Resources {..} swaps buyerW = do
     buyerAddr = walletAddr . buyerW $ rWallets
     mergePayouts = fmap (uncurry Payout) . Map.toList . foldr (Map.unionWith mappend) mempty . fmap
       (\Payout {..} -> Map.singleton pAddress pValue)
-  handle (throwIO . TxException) . eval cTestnetMagic cProtocolParams $ do
+    evalConfig = EvalConfig
+      { ecOutputDir      = Nothing -- Just "temp/cbor"
+      , ecTestnet        = cTestnetMagic
+      , ecProtocolParams = cProtocolParams
+      }
+  handle (throwIO . TxException) . eval evalConfig $ do
     (payouts, assets) <-
       fmap (bimap (mergePayouts . mconcat) (toTxValue . mconcat) . unzip) . forScriptInputs config swaps $ \s utxo -> do
         scriptInput utxo cPlutusScript s Buy
@@ -283,9 +289,14 @@ evalBuys config@Config {..} Resources {..} swaps buyerW = do
 
 evalCancelSwaps :: Config -> Resources -> [SwapAndDatum] -> SelectWallet -> IO ()
 evalCancelSwaps config@Config {..} Resources {..} swaps canceller = do
-  let Wallet {..} = canceller rWallets
+  let
+    Wallet {..} = canceller rWallets
+    evalConfig = mempty
+      { ecTestnet        = cTestnetMagic
+      , ecProtocolParams = cProtocolParams
+      }
 
-  handle (throwIO . TxException) . eval cTestnetMagic cProtocolParams $ do
+  handle (throwIO . TxException) . eval evalConfig $ do
     void $ forScriptInputs config swaps $ \s utxo -> scriptInput utxo cPlutusScript s Cancel
     (cin, _) <- selectCollateralInput walletAddr
     input . iUtxo $ cin
@@ -297,9 +308,14 @@ evalCancelSwaps config@Config {..} Resources {..} swaps canceller = do
 
 evalCloseSwaps :: Config -> Resources -> [SwapAndDatum] -> SelectWallet -> IO ()
 evalCloseSwaps config@Config {..} Resources {..} swaps closer = do
-  let Wallet {..} = closer rWallets
+  let
+    Wallet {..} = closer rWallets
+    evalConfig = mempty
+      { ecTestnet        = cTestnetMagic
+      , ecProtocolParams = cProtocolParams
+      }
 
-  handle (throwIO . TxException) . eval cTestnetMagic cProtocolParams $ do
+  handle (throwIO . TxException) . eval evalConfig $ do
     void $ forScriptInputs config swaps $ \s@Swap {..} utxo -> do
       scriptInput utxo cPlutusScript s Close
       void $ output (lookupWalletAddr sOwner rWallets) ("1758582 lovelace" <> toTxValue sSwapValue)
@@ -357,6 +373,10 @@ createSwap config@Config {..} wallet@Wallet {..} policy payouts deadline = do
   let
     pValue = Value.singleton (fromString . policyId $ policy) "123456" 1
     swapDatum = Swap (fromString walletPkh) pValue payouts deadline
+    evalConfig = mempty
+      { ecTestnet        = cTestnetMagic
+      , ecProtocolParams = cProtocolParams
+      }
 
   datumHash <- hashDatum . toCliJson $ swapDatum
 
@@ -367,7 +387,7 @@ createSwap config@Config {..} wallet@Wallet {..} policy payouts deadline = do
     txValue <- evalMint config wallet policy "123456" 1
     waitForNextBlock cTestnetMagic
 
-    handle @SomeException (\_ -> throwIO $ SetupException "createSwap") . eval cTestnetMagic cProtocolParams $ do
+    handle @SomeException (\_ -> throwIO $ SetupException "createSwap") . eval evalConfig $ do
       outputWithHash cScriptAddr ("5000000 lovelace" <> txValue) swapDatum
       void $ selectInputs "7000000 lovelace" walletAddr
       changeAddress walletAddr
@@ -388,8 +408,13 @@ encodedTokenName =
 
 evalMint :: Config -> Wallet -> Policy -> String -> Integer -> IO TxBuilder.Value
 evalMint Config { cTestnetMagic, cProtocolParams } Wallet { walletAddr, walletSkeyPath } policy token n = do
-  let txValue = TxBuilder.Value . Map.singleton (policyId policy) . Map.singleton (encodedTokenName token) $ n
-  handle @SomeException (\e -> throwIO $ SetupException $ "evalMint " <> show e) . eval cTestnetMagic cProtocolParams $ do
+  let
+    txValue = TxBuilder.Value . Map.singleton (policyId policy) . Map.singleton (encodedTokenName token) $ n
+    evalConfig = mempty
+      { ecTestnet        = cTestnetMagic
+      , ecProtocolParams = cProtocolParams
+      }
+  handle @SomeException (\e -> throwIO $ SetupException $ "evalMint " <> show e) . eval evalConfig $ do
     mint txValue (policyFile policy) ([] @Int)
 
     void $ output walletAddr ("1758582 lovelace" <> txValue)
@@ -439,7 +464,12 @@ withPolicy n f = withSystemTempFile ("policy-" <> show n <> ".plutus") $ \fp fh 
 
 withWallets :: Config -> (Wallets -> IO c) -> IO c
 withWallets config@Config {..} runTest =
-  let createWallet' = createWallet config
+  let
+    createWallet' = createWallet config
+    evalConfig = mempty
+      { ecTestnet        = cTestnetMagic
+      , ecProtocolParams = cProtocolParams
+      }
   in
     bracket
       (do
@@ -452,7 +482,7 @@ withWallets config@Config {..} runTest =
           <*> createWallet' "royalties"
 
         unless (null newAddrs) $ do
-          handle @SomeException (\_ -> throwIO $ SetupException "withWallets") . eval cTestnetMagic cProtocolParams $ do
+          handle @SomeException (\_ -> throwIO $ SetupException "withWallets") . eval evalConfig $ do
             values <- traverse (\addr -> fmap oValue . output addr $ "100000000 lovelace") newAddrs
 
             srcAddr <- liftIO . fmap trim . readFile $ cSourceWalletAddressPath

@@ -144,7 +144,6 @@ mergePayouts Payout {..} =
 
 paidAtleastTo :: [SwapTxOut] -> PubKeyHash -> Value -> Bool
 paidAtleastTo outputs pkh val = valuePaidTo' outputs pkh `geq` val
-
 -------------------------------------------------------------------------------
 -- Boilerplate
 -------------------------------------------------------------------------------
