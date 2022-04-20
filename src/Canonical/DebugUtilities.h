@@ -1,5 +1,3 @@
-#define DEBUG
-
 #if defined(DEBUG)
 #define TRACE_IF_FALSE(a,b,c) traceIfFalse a c
 #define TRACE_ERROR(a, b) traceError a
