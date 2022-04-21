@@ -193,9 +193,13 @@ instance Eq Swap where
 instance Eq Redeemer where
   x == y = case (x, y) of
     (Buy, Buy) -> True
+    (Buy, _) -> False
     (Cancel, Cancel) -> True
+    (Cancel, _) -> False
     (Close, Close) -> True
-    _ -> False
+    (Close, _) -> False
+    (Accept, Accept) -> True
+    (Accept, _) -> False
 
 PlutusTx.unstableMakeIsData ''Payout
 PlutusTx.unstableMakeIsData ''Swap
