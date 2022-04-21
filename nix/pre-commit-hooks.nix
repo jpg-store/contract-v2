@@ -21,7 +21,7 @@ let
     ];
     hooks =
       {
-        brittany.enable = true;
+        # brittany.enable = true;
         cabal-fmt.enable = true;
         hlint.enable = true;
         nix-linter.enable = true;

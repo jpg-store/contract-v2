@@ -69,6 +69,7 @@ data SwapTxInfo = SwapTxInfo
   , atxInfoId :: BuiltinData
   }
 
+{-# HLINT ignore SwapScriptPurpose #-}
 data SwapScriptPurpose
     = ASpending TxOutRef
 
@@ -210,6 +211,7 @@ PlutusTx.unstableMakeIsData ''Redeemer
 -------------------------------------------------------------------------------
 -- check that each user is paid
 -- and the total is correct
+{-# HLINT ignore validateOutputConstraints "Use uncurry" #-}
 validateOutputConstraints :: [SwapTxOut] -> Map PubKeyHash Value -> Bool
 validateOutputConstraints outputs constraints = all (\(pkh, v) -> paidAtleastTo outputs pkh v) (M.toList constraints)
 
