@@ -19,6 +19,7 @@ import Control.Monad.State
 import Data.Aeson as Aeson
 import Data.Aeson.Types as Aeson
 import Data.Bifunctor
+import Data.Foldable
 import Data.List.Extra
 import qualified Data.Map as Map
 import Data.String
@@ -27,6 +28,7 @@ import Data.Traversable
 import Env
 import Ledger (POSIXTime, PubKeyHash)
 import Plutus.V1.Ledger.Ada
+import qualified Plutus.V1.Ledger.Ada as Ada
 import qualified Plutus.V1.Ledger.Value as Value
 import System.Directory
 import System.Exit
@@ -48,8 +50,8 @@ data Opts = Opts
 data Config = Config
   { cSourceWalletAddressPath :: FilePath
   , cSourceWalletSkeyPath :: FilePath
-  , cTestnetMagic :: Maybe Integer
   , cWalletDir :: FilePath
+  , cTestnetMagic :: Maybe Integer
   , cProtocolParams :: Maybe FilePath
   , cPlutusScript :: FilePath
   , cScriptAddr :: Address
@@ -89,16 +91,6 @@ data Resources = Resources
   }
   deriving Show
 
-data TestException = SetupException String | TxException SomeException
-  deriving (Show)
-
-instance Exception TestException
-
-isTxException :: TestException -> Bool
-isTxException = \case
-  TxException _ -> True
-  _ -> False
-
 type SelectWallet = Wallets -> Wallet
 type SelectPolicy = [Policy] -> Policy
 
@@ -135,8 +127,12 @@ runTests config = do
           it "can be cancelled by owner" $ \(resources, swaps) -> evalCancelSwaps config resources swaps seller1
 
           it "cannot be closed"
-            $ \(resources, swaps) -> evalCloseSwaps config resources swaps marketplace
-              `shouldThrow` isTxException
+            $ \(resources, swaps) -> evalCloseSwaps config resources swaps marketplace `shouldThrow` isEvalException
+
+          context "buyer counter offers" $ do
+            aroundWith (createCounterOffer config) $do
+              it "seller can accept offer" $ \(resources, swaps, offer) ->
+                evalAccept config resources (head swaps) offer
 
       context "that has *not* expired" $ do
         aroundWith (createSwaps config [(swapSpec seller1 policy1) { specDeadline = Just expiresInYear3000 }]) $ do
@@ -145,13 +141,13 @@ runTests config = do
           it "can be cancelled by owner" $ \(resources, swaps) -> evalCancelSwaps config resources swaps seller1
 
           it "cannot be closed"
-            $ \(resources, swaps) -> evalCloseSwaps config resources swaps marketplace `shouldThrow` isTxException
+            $ \(resources, swaps) -> evalCloseSwaps config resources swaps marketplace `shouldThrow` isEvalException
 
       context "that has expired" $ do
         aroundWith (createSwaps config [(swapSpec seller1 policy1) { specDeadline = Just expiredDeadline }]) $ do
 
           it "cannot be purchased"
-            $ \(resources, swaps) -> evalBuys config resources swaps buyer `shouldThrow` isTxException
+            $ \(resources, swaps) -> evalBuys config resources swaps buyer `shouldThrow` isEvalException
 
           it "can be cancelled by owner" $ \(resources, swaps) -> evalCancelSwaps config resources swaps seller1
 
@@ -167,7 +163,7 @@ runTests config = do
         context "that have no expiration" $ do
           aroundWith (createSwaps config [swapSpec seller1 policy1, swapSpec seller2 policy3]) $ do
             it "cannot be cancelled in bulk" $ \(resources, swaps) -> do
-              evalCancelSwaps config resources swaps seller1 `shouldThrow` isTxException
+              evalCancelSwaps config resources swaps seller1 `shouldThrow` isEvalException
 
             it "can be purchased in bulk" $ \(resources, swaps) -> do
               evalBuys config resources swaps buyer
@@ -182,7 +178,7 @@ runTests config = do
               )
             $ do
                 it "cannot be purchased"
-                  $ \(resources, swaps) -> evalBuys config resources swaps buyer `shouldThrow` isTxException
+                  $ \(resources, swaps) -> evalBuys config resources swaps buyer `shouldThrow` isEvalException
 
                 it "can be closed by anyone" $ \(resources, swaps) -> evalCloseSwaps config resources swaps marketplace
 
@@ -237,6 +233,9 @@ main = do
 
   withConfig runTests
 
+isEvalException :: Selector EvalException
+isEvalException = const True
+
 toTxValue :: Value.Value -> TxBuilder.Value
 toTxValue =
   mconcat
@@ -249,10 +248,48 @@ toTxValue =
 allWallets :: Wallets -> [Wallet]
 allWallets Wallets {..} = buyer : royalties : marketplace : sellers
 
-lookupWalletAddr :: PubKeyHash -> Wallets -> String
-lookupWalletAddr pkh =
-  maybe (error $ "couldn't find wallet for pkh " <> show pkh) walletAddr . find ((show pkh ==) . walletPkh) . allWallets
+lookupWallet :: PubKeyHash -> Wallets -> Wallet
+lookupWallet pkh = maybe (error $ "couldn't find wallet for pkh " <> show pkh) id . find ((show pkh ==) . walletPkh) . allWallets
 
+lookupWalletAddr :: PubKeyHash -> Wallets -> String
+lookupWalletAddr pkh = walletAddr . lookupWallet pkh
+
+evalAccept :: Config -> Resources -> SwapAndDatum -> SwapAndDatum -> IO ()
+evalAccept config@Config {..} Resources {..} theSwap offer = do
+  let
+    sellerPkh = sOwner . sadSwap $ theSwap
+    sellerWallet = lookupWallet sellerPkh rWallets
+    sellerAddr = walletAddr sellerWallet
+    buyerAddr = lookupWalletAddr (sOwner . sadSwap $ offer) rWallets
+
+    asset = sSwapValue . sadSwap $ theSwap
+    offerValue = sSwapValue . sadSwap $ offer
+    sellerPayout = Payout sellerPkh offerValue
+    payouts = [sellerPayout]
+
+    evalConfig = EvalConfig
+      { ecOutputDir      = Nothing -- Just "temp/cbor"
+      , ecTestnet        = cTestnetMagic
+      , ecProtocolParams = cProtocolParams
+      }
+  eval evalConfig $ do
+    void . forScriptInputs config [theSwap,offer] $ \s utxo -> do
+      scriptInput utxo cPlutusScript s Accept
+
+    void $ output buyerAddr (toTxValue asset <> "1758582 lovelace")
+
+    for_ payouts $ \Payout {..} ->
+      output (lookupWalletAddr pAddress rWallets) . toTxValue $ pValue
+
+    (cInput, _) <- selectCollateralInput sellerAddr
+    input . iUtxo $ cInput
+    void $ balanceNonAdaAssets sellerAddr
+    start <- currentSlot
+    timerange start (start + 100)
+    changeAddress sellerAddr
+    sign . walletSkeyPath $ sellerWallet
+
+  waitForNextBlock cTestnetMagic
 
 evalBuys :: Config -> Resources -> [SwapAndDatum] -> SelectWallet -> IO ()
 evalBuys config@Config {..} Resources {..} swaps buyerW = do
@@ -265,7 +302,7 @@ evalBuys config@Config {..} Resources {..} swaps buyerW = do
       , ecTestnet        = cTestnetMagic
       , ecProtocolParams = cProtocolParams
       }
-  handle (throwIO . TxException) . eval evalConfig $ do
+  eval evalConfig $ do
     (payouts, assets) <-
       fmap (bimap (mergePayouts . mconcat) (toTxValue . mconcat) . unzip) . forScriptInputs config swaps $ \s utxo -> do
         scriptInput utxo cPlutusScript s Buy
@@ -296,7 +333,7 @@ evalCancelSwaps config@Config {..} Resources {..} swaps canceller = do
       , ecProtocolParams = cProtocolParams
       }
 
-  handle (throwIO . TxException) . eval evalConfig $ do
+  eval evalConfig $ do
     void $ forScriptInputs config swaps $ \s utxo -> scriptInput utxo cPlutusScript s Cancel
     (cin, _) <- selectCollateralInput walletAddr
     input . iUtxo $ cin
@@ -315,7 +352,7 @@ evalCloseSwaps config@Config {..} Resources {..} swaps closer = do
       , ecProtocolParams = cProtocolParams
       }
 
-  handle (throwIO . TxException) . eval evalConfig $ do
+  eval evalConfig $ do
     void $ forScriptInputs config swaps $ \s@Swap {..} utxo -> do
       scriptInput utxo cPlutusScript s Close
       void $ output (lookupWalletAddr sOwner rWallets) ("1758582 lovelace" <> toTxValue sSwapValue)
@@ -328,7 +365,6 @@ evalCloseSwaps config@Config {..} Resources {..} swaps closer = do
     sign walletSkeyPath
 
   waitForNextBlock cTestnetMagic
-
 
 forScriptInputs :: Config -> [SwapAndDatum] -> (Swap -> UTxO -> Tx a) -> Tx [a]
 forScriptInputs Config {..} swaps f = for swaps $ \SwapAndDatum {..} -> do
@@ -387,7 +423,7 @@ createSwap config@Config {..} wallet@Wallet {..} policy payouts deadline = do
     txValue <- evalMint config wallet policy "123456" 1
     waitForNextBlock cTestnetMagic
 
-    handle @SomeException (\_ -> throwIO $ SetupException "createSwap") . eval evalConfig $ do
+    eval evalConfig $ do
       outputWithHash cScriptAddr ("5000000 lovelace" <> txValue) swapDatum
       void $ selectInputs "7000000 lovelace" walletAddr
       changeAddress walletAddr
@@ -397,6 +433,37 @@ createSwap config@Config {..} wallet@Wallet {..} policy payouts deadline = do
     waitForNextBlock cTestnetMagic
 
   pure $ SwapAndDatum swapDatum datumHash
+
+createCounterOffer :: Config -> ActionWith (Resources, Swaps, SwapAndDatum) -> ActionWith (Resources, Swaps)
+createCounterOffer Config{..} runTest (rs@Resources{rWallets}, swaps) = do
+  let
+    SwapAndDatum{sadSwap=Swap{sSwapValue}} = head swaps
+    Wallet{..} = buyer rWallets
+    buyerPkh = fromString walletPkh
+    buyerPayout = Payout buyerPkh sSwapValue
+    offerValue = Ada.lovelaceValueOf 1500000
+    txOfferValue = toTxValue offerValue
+    offerDatum = Swap buyerPkh offerValue [buyerPayout] Nothing
+
+    evalConfig = EvalConfig
+      { ecOutputDir      = Nothing -- Just "temp/cbor"
+      , ecTestnet        = cTestnetMagic
+      , ecProtocolParams = cProtocolParams
+      }
+
+  datumHash <- hashDatum . toCliJson $ offerDatum
+
+  eval evalConfig $ do
+    outputWithHash cScriptAddr txOfferValue offerDatum
+    void $ selectInputs txOfferValue walletAddr
+    changeAddress walletAddr
+    void . balanceNonAdaAssets $ walletAddr
+    sign walletSkeyPath
+
+  waitForNextBlock cTestnetMagic
+
+  runTest (rs, swaps, SwapAndDatum offerDatum datumHash)
+
 
 encodedTokenName :: String -> String
 encodedTokenName =
@@ -414,7 +481,7 @@ evalMint Config { cTestnetMagic, cProtocolParams } Wallet { walletAddr, walletSk
       { ecTestnet        = cTestnetMagic
       , ecProtocolParams = cProtocolParams
       }
-  handle @SomeException (\e -> throwIO $ SetupException $ "evalMint " <> show e) . eval evalConfig $ do
+  eval evalConfig $ do
     mint txValue (policyFile policy) ([] @Int)
 
     void $ output walletAddr ("1758582 lovelace" <> txValue)
@@ -446,6 +513,7 @@ withPlutusFile testnetMagic runTest = withSystemTempFile "swap.plutus" $ \fp fh 
     "cardano-cli"
     (["address", "build", "--payment-script-file", fp] <> toTestnetFlags testnetMagic)
     mempty
+  putStrLn . mconcat $ [ "Plutus script address: ", scriptAddr ]
   runTest fp scriptAddr
 
 
@@ -482,7 +550,7 @@ withWallets config@Config {..} runTest =
           <*> createWallet' "royalties"
 
         unless (null newAddrs) $ do
-          handle @SomeException (\_ -> throwIO $ SetupException "withWallets") . eval evalConfig $ do
+          eval evalConfig $ do
             values <- traverse (\addr -> fmap oValue . output addr $ "100000000 lovelace") newAddrs
 
             srcAddr <- liftIO . fmap trim . readFile $ cSourceWalletAddressPath

@@ -27,7 +27,7 @@ import Codec.Serialise (serialise)
 import qualified Data.ByteString.Lazy as LB
 import qualified Data.ByteString.Short as SBS
 import Ledger
-  (Datum(..), DatumHash, POSIXTime, POSIXTimeRange, PubKeyHash, TxOutRef, after, before, mkValidatorScript)
+  (Datum(..), DatumHash, POSIXTime, POSIXTimeRange, PubKeyHash, TxOutRef, after, before, mkValidatorScript, ValidatorHash, validatorHash)
 import qualified Ledger.Typed.Scripts as Scripts
 import Plutus.V1.Ledger.Credential
 import Plutus.V1.Ledger.Value
@@ -89,6 +89,18 @@ pubKeyOutputsAt' pk outs =
     flt _ = Nothing
   in mapMaybe flt outs
 
+ownHash' :: [SwapTxInInfo] -> TxOutRef -> ValidatorHash
+ownHash' ins txOutRef = go ins where
+    go = \case
+      [] -> TRACE_ERROR("The impossible happened", "-1")
+      SwapTxInInfo {..} :xs ->
+        if atxInInfoOutRef == txOutRef then
+          case atxOutAddress atxInInfoResolved of
+            SwapAddress (ScriptCredential s) _ -> s
+            _ -> TRACE_ERROR("The impossible happened", "-1")
+        else
+          go xs
+
 unstableMakeIsData ''SwapTxInfo
 unstableMakeIsData ''SwapScriptContext
 makeIsDataIndexed  ''SwapScriptPurpose [('ASpending,1)]
@@ -120,6 +132,7 @@ data Swap = Swap
 data Redeemer
   = Buy
   | Cancel
+  | Accept
   | Close
 
 -------------------------------------------------------------------------------
@@ -132,6 +145,22 @@ isScriptAddress SwapAddress { aaddressCredential } = case aaddressCredential of
 
 isScriptInput :: SwapTxInInfo -> Bool
 isScriptInput txIn = isScriptAddress (atxOutAddress  (atxInInfoResolved txIn))
+
+onlyThisTypeOfScript :: ValidatorHash -> [SwapTxInInfo] -> Bool
+onlyThisTypeOfScript thisValidator = go where
+  go = \case
+    [] -> True
+    SwapTxInInfo
+      { atxInInfoResolved = SwapTxOut
+        { atxOutAddress = SwapAddress
+          { aaddressCredential = ScriptCredential vh
+          }
+        }
+      } : xs ->  if vh == thisValidator then
+              go xs
+            else
+              TRACE_IF_FALSE("Bad validator input", "100", False)
+    _ : xs -> go xs
 
 mapInsertWith :: Eq k => (a -> a -> a) -> k -> a -> Map k a -> Map k a
 mapInsertWith f k v xs = case M.lookup k xs of
@@ -190,10 +219,8 @@ swapValidator _ r SwapScriptContext{aScriptContextTxInfo = SwapTxInfo{..}, aScri
       [x] -> x
       _ -> TRACE_ERROR("single signer expected", "1")
 
-    -- Verify that the script inputs are all for this script
-    validScriptInputs :: Bool
-    validScriptInputs =
-      any (\x -> not (isScriptInput x)) atxInfoInputs
+    thisValidator :: ValidatorHash
+    thisValidator = ownHash' atxInfoInputs thisOutRef
 
     convertDatum :: forall a. DataConstraint(a) => Datum -> a
     convertDatum d =
@@ -210,12 +237,14 @@ swapValidator _ r SwapScriptContext{aScriptContextTxInfo = SwapTxInfo{..}, aScri
     foldSwaps f init = foldr f init swaps
 
   in if atxInInfoOutRef (head (filter isScriptInput atxInfoInputs)) /= thisOutRef then True else
-    TRACE_IF_FALSE("invalid script inputs", "3", validScriptInputs) && case r of
+    TRACE_IF_FALSE("Not the only type of script", "3", (onlyThisTypeOfScript thisValidator atxInfoInputs))
+    && case r of
       Cancel ->
         let
           signerIsOwner Swap{sOwner} = singleSigner == sOwner
         in
           TRACE_IF_FALSE("signer is not the owner", "4", (all signerIsOwner swaps))
+
       Close ->
         -- assume all redeemers are Close and all the assets are going back to their owner
         let
@@ -229,6 +258,7 @@ swapValidator _ r SwapScriptContext{aScriptContextTxInfo = SwapTxInfo{..}, aScri
           assets = foldSwaps f mempty
         in
           TRACE_IF_FALSE("wrong output", "7", (outputsAreValid assets))
+
       Buy ->
         let
           accumPayouts Swap{sSwapValue, sSwapPayouts, sDeadline} acc =
@@ -241,6 +271,22 @@ swapValidator _ r SwapScriptContext{aScriptContextTxInfo = SwapTxInfo{..}, aScri
           payouts = foldSwaps accumPayouts mempty
         in TRACE_IF_FALSE("wrong output", "9", (outputsAreValid payouts))
 
+      Accept ->
+        -- Acts like a Buy, but we ignore any payouts that go to the signer of the
+        -- transaction. This allows the seller to accept an offer from a buyer that
+        -- does not pay the seller as much as they requested
+        let
+          accumPayouts Swap{..} acc
+            | sOwner == singleSigner = acc
+            | otherwise =
+              if all (`after` atxInfoValidRange) sDeadline
+               then foldr mergePayouts acc (Payout singleSigner sSwapValue : sSwapPayouts)
+               else TRACE_ERROR("deadline is passed", "10")
+
+          -- assume all redeemers are accept, all the payouts should be paid (excpet those to the signer)
+          payouts :: Map PubKeyHash Value
+          payouts = foldSwaps accumPayouts mempty
+        in TRACE_IF_FALSE("wrong output", "11", (outputsAreValid payouts))
 -------------------------------------------------------------------------------
 -- Entry Points
 -------------------------------------------------------------------------------
@@ -253,6 +299,9 @@ validator = mkValidatorScript $$(PlutusTx.compile [|| swapWrapped ||])
 
 swap :: PlutusScript PlutusScriptV1
 swap = PlutusScriptSerialised . SBS.toShort . LB.toStrict . serialise $ validator
+
+swapHash :: ValidatorHash
+swapHash = validatorHash validator
 
 writePlutusFile :: FilePath -> IO ()
 writePlutusFile filePath = Api.writeFileTextEnvelope filePath Nothing swap >>= \case
