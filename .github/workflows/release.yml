@@ -29,7 +29,9 @@ jobs:
       - name: build
         run: nix flake check --print-build-logs
       - name: build release
-        run: nix build --print-build-logs -f release.nix --argstr version $RELEASE_VERSION --out-link jpg-store-bulk-purchase-${{ env.RELEASE_VERSION }}.tar.gz
+        run: nix build --print-build-logs -f release.nix --argstr version ${{ env.RELEASE_VERSION }}
+      - name: copy tarball
+        run: cp --no-preserve=all --dereference result jpg-store-bulk-purchase-${{ env.RELEASE_VERSION }}.tar.gz
       - name: release
         uses: softprops/action-gh-release@v1
         with:
