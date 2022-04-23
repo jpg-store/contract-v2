@@ -56,3 +56,4 @@ jobs:
         run: echo $(uname -m)-$(uname -s) | tr '[:upper:]' '[:lower:]' | sed -E 's/^(.*)$/[ "\1" ]/' | tee supported-systems.nix
       - run: nix flake check --print-build-logs
       - run: nix develop --print-build-logs  --command echo Ready
+      - run: nix build --print-build-logs -f release.nix --argstr version $GITHUB_SHA

@@ -26,11 +26,15 @@
         let
           plutus = import plutus-apps { inherit system; };
           pkgs = plutus.pkgs.appendOverlays [
-            (_: _: { inherit plutus; })
+            (_: _: {
+              inherit plutus;
+
+              inherit (cardano-node.packages.${system}) cardano-node cardano-cli;
+            })
 
             (import ./nix/haskell)
           ];
-          inherit (pkgs.jpg-store-bulk-purchase) project;
+          inherit (pkgs.jpg-store-bulk-purchase) project update-materialized;
 
           flake = project.flake { };
 
@@ -38,13 +42,6 @@
 
           pre-commit = pkgs.callPackage ./nix/pre-commit-hooks.nix { inherit pre-commit-hooks hsTools; };
 
-          update-materialized = pkgs.writeShellScriptBin "update-materialized" ''
-            set -euo pipefail
-
-            ${project.plan-nix.passthru.calculateMaterializedSha} > nix/haskell/plan-sha256
-            mkdir -p nix/haskell/materialized
-            ${project.plan-nix.passthru.generateMaterialized} nix/haskell/materialized
-          '';
         in
         pkgs.lib.recursiveUpdate flake {
           checks = {
