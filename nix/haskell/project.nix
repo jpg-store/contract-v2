@@ -14,8 +14,8 @@ haskell-nix.project {
 
   sha256map = import ./sha256map.nix;
 
-  # plan-sha256 = builtins.readFile ./plan-sha256;
-  # materialized = ./materialized;
+  plan-sha256 = builtins.readFile ./plan-sha256;
+  materialized = ./materialized;
 
   modules = [
     {
