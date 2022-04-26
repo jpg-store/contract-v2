@@ -27,7 +27,7 @@ import Codec.Serialise (serialise)
 import qualified Data.ByteString.Lazy as LB
 import qualified Data.ByteString.Short as SBS
 import Ledger
-  (Datum(..), DatumHash, POSIXTime, POSIXTimeRange, PubKeyHash, TxOutRef, mkValidatorScript, ValidatorHash, validatorHash)
+  (Datum(..), DatumHash, PubKeyHash, TxOutRef, mkValidatorScript, ValidatorHash, validatorHash)
 import qualified Ledger.Typed.Scripts as Scripts
 import Plutus.V1.Ledger.Credential
 import Plutus.V1.Ledger.Value
