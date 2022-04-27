@@ -63,6 +63,7 @@ data SwapTxInfo = SwapTxInfo
   , atxInfoMint :: BuiltinData
   , atxInfoDCert :: BuiltinData
   , atxInfoWdrl :: BuiltinData
+  , atxInfoValidRange :: BuiltinData
   , atxInfoSignatories :: [PubKeyHash]
   , atxInfoData :: [(DatumHash, Datum)]
   , atxInfoId :: BuiltinData
