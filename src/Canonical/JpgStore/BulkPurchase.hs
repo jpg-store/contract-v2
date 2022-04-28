@@ -249,7 +249,7 @@ swapValidator _ r SwapScriptContext{aScriptContextTxInfo = SwapTxInfo{..}, aScri
         let
           accumPayouts Swap{..} acc
             | sOwner == singleSigner = acc
-            | otherwise = foldr mergePayouts acc (Payout singleSigner sSwapValue : sSwapPayouts)
+            | otherwise = foldr mergePayouts acc sSwapPayouts     
 
           -- assume all redeemers are accept, all the payouts should be paid (excpet those to the signer)
           payouts :: Map PubKeyHash Value
