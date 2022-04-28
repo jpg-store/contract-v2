@@ -223,10 +223,10 @@ swapValidator _ r SwapScriptContext{aScriptContextTxInfo = SwapTxInfo{..}, aScri
     convertDatum :: forall a. DataConstraint(a) => Datum -> a
     convertDatum d =
       let a = getDatum d
-       in FROM_BUILT_IN_DATA("found datum that is not a swap", "2", a)
+      in FROM_BUILT_IN_DATA("found datum that is not a swap", "2", a)
 
     swaps :: [Swap]
-    swaps = fmap (\(_, d) -> convertDatum d) atxInfoData
+    swaps = map (\(_, d) -> convertDatum d) atxInfoData
 
     outputsAreValid :: Map PubKeyHash Value -> Bool
     outputsAreValid = validateOutputConstraints atxInfoOutputs
