@@ -27,7 +27,7 @@ import Codec.Serialise (serialise)
 import qualified Data.ByteString.Lazy as LB
 import qualified Data.ByteString.Short as SBS
 import Ledger
-  (Datum(..), DatumHash, POSIXTime, POSIXTimeRange, PubKeyHash, TxOutRef, after, before, mkValidatorScript, ValidatorHash, validatorHash)
+  (Datum(..), DatumHash, PubKeyHash, TxOutRef, mkValidatorScript, ValidatorHash, validatorHash)
 import qualified Ledger.Typed.Scripts as Scripts
 import Plutus.V1.Ledger.Credential
 import Plutus.V1.Ledger.Value
@@ -63,7 +63,7 @@ data SwapTxInfo = SwapTxInfo
   , atxInfoMint :: BuiltinData
   , atxInfoDCert :: BuiltinData
   , atxInfoWdrl :: BuiltinData
-  , atxInfoValidRange :: POSIXTimeRange
+  , atxInfoValidRange :: BuiltinData
   , atxInfoSignatories :: [PubKeyHash]
   , atxInfoData :: [(DatumHash, Datum)]
   , atxInfoId :: BuiltinData
@@ -125,16 +125,12 @@ data Swap = Swap
   -- ^ Value the owner is offering up
   , sSwapPayouts :: ![Payout]
   -- ^ Divvy up the payout to different address for Swap
-  , sDeadline :: !(Maybe POSIXTime)
-  -- ^ Buys are only accepted until this deadline. After the deadline passes anyone can use a close redeemer to
-  -- send the assets back to the owner.
   }
 
 data Redeemer
-  = Buy
-  | Cancel
+  = Cancel
   | Accept
-  | Close
+
 
 -------------------------------------------------------------------------------
 -- Utilities
@@ -188,17 +184,11 @@ instance Eq Swap where
       == sSwapValue y
       && sSwapPayouts x
       == sSwapPayouts y
-      && sDeadline x
-      == sDeadline y
 
 instance Eq Redeemer where
   x == y = case (x, y) of
-    (Buy, Buy) -> True
-    (Buy, _) -> False
     (Cancel, Cancel) -> True
     (Cancel, _) -> False
-    (Close, Close) -> True
-    (Close, _) -> False
     (Accept, Accept) -> True
     (Accept, _) -> False
 
@@ -241,7 +231,8 @@ swapValidator _ r SwapScriptContext{aScriptContextTxInfo = SwapTxInfo{..}, aScri
 
     foldSwaps :: (Swap -> a -> a) -> a -> a
     foldSwaps f init = foldr f init swaps
-
+  -- This allows the script to validate all inputs and outputs on only one script input.
+  -- Ignores other script inputs being validated each time
   in if atxInInfoOutRef (head (filter isScriptInput atxInfoInputs)) /= thisOutRef then True else
     TRACE_IF_FALSE("Not the only type of script", "3", (onlyThisTypeOfScript thisValidator atxInfoInputs))
     && case r of
@@ -251,32 +242,6 @@ swapValidator _ r SwapScriptContext{aScriptContextTxInfo = SwapTxInfo{..}, aScri
         in
           TRACE_IF_FALSE("signer is not the owner", "4", (all signerIsOwner swaps))
 
-      Close ->
-        -- assume all redeemers are Close and all the assets are going back to their owner
-        let
-          f Swap{..} payouts =
-            case sDeadline of
-              Nothing -> TRACE_ERROR("swap has no deadline", "5")
-              Just deadline | deadline `before` atxInfoValidRange -> mergePayouts (Payout sOwner sSwapValue) payouts
-              Just _ -> TRACE_ERROR("deadline not passed", "6")
-
-          assets :: Map PubKeyHash Value
-          assets = foldSwaps f mempty
-        in
-          TRACE_IF_FALSE("wrong output", "7", (outputsAreValid assets))
-
-      Buy ->
-        let
-          accumPayouts Swap{sSwapValue, sSwapPayouts, sDeadline} acc =
-            if all (`after` atxInfoValidRange) sDeadline
-              then foldr mergePayouts acc (Payout singleSigner sSwapValue : sSwapPayouts)
-              else TRACE_ERROR("deadline is passed", "8")
-
-          -- assume all redeemers are buys, all the payouts should be paid, and the assets should go to the tx signer (aka the buyer)
-          payouts :: Map PubKeyHash Value
-          payouts = foldSwaps accumPayouts mempty
-        in TRACE_IF_FALSE("wrong output", "9", (outputsAreValid payouts))
-
       Accept ->
         -- Acts like a Buy, but we ignore any payouts that go to the signer of the
         -- transaction. This allows the seller to accept an offer from a buyer that
@@ -284,15 +249,12 @@ swapValidator _ r SwapScriptContext{aScriptContextTxInfo = SwapTxInfo{..}, aScri
         let
           accumPayouts Swap{..} acc
             | sOwner == singleSigner = acc
-            | otherwise =
-              if all (`after` atxInfoValidRange) sDeadline
-               then foldr mergePayouts acc (Payout singleSigner sSwapValue : sSwapPayouts)
-               else TRACE_ERROR("deadline is passed", "10")
+            | otherwise = foldr mergePayouts acc (Payout singleSigner sSwapValue : sSwapPayouts)
 
           -- assume all redeemers are accept, all the payouts should be paid (excpet those to the signer)
           payouts :: Map PubKeyHash Value
           payouts = foldSwaps accumPayouts mempty
-        in TRACE_IF_FALSE("wrong output", "11", (outputsAreValid payouts))
+        in TRACE_IF_FALSE("wrong output", "5", (outputsAreValid payouts))
 -------------------------------------------------------------------------------
 -- Entry Points
 -------------------------------------------------------------------------------
