@@ -135,13 +135,12 @@ data Redeemer
 -------------------------------------------------------------------------------
 -- Utilities
 -------------------------------------------------------------------------------
-isScriptAddress :: SwapAddress -> Bool
-isScriptAddress SwapAddress { aaddressCredential } = case aaddressCredential of
-  ScriptCredential _ -> True
+isScriptThisInput :: ValidatorHash -> SwapTxInInfo -> Bool
+isScriptThisInput vh txIn = case aaddressCredential (atxOutAddress  (atxInInfoResolved txIn)) of
+  ScriptCredential vh'
+    | vh' == vh -> True
+    | otherwise -> TRACE_ERROR("Wrong type of script input", "3")
   _ -> False
-
-isScriptInput :: SwapTxInInfo -> Bool
-isScriptInput txIn = isScriptAddress (atxOutAddress  (atxInInfoResolved txIn))
 
 onlyThisTypeOfScript :: ValidatorHash -> [SwapTxInInfo] -> Bool
 onlyThisTypeOfScript thisValidator = go where
@@ -164,9 +163,12 @@ mapInsertWith f k v xs = case M.lookup k xs of
   Nothing -> M.insert k v xs
   Just v' -> M.insert k (f v v') xs
 
+absoluteValueAdd :: Value -> Value -> Value
+absoluteValueAdd x y = unionWith (\x' y' -> abs x' + abs y') x y
+
 mergePayouts :: Payout -> Map PubKeyHash Value -> Map PubKeyHash Value
 mergePayouts Payout {..} =
-  mapInsertWith (+) pAddress pValue
+  mapInsertWith absoluteValueAdd pAddress pValue
 
 paidAtleastTo :: [SwapTxOut] -> PubKeyHash -> Value -> Bool
 paidAtleastTo outputs pkh val = valuePaidTo' outputs pkh `geq` val
@@ -233,9 +235,8 @@ swapValidator _ r SwapScriptContext{aScriptContextTxInfo = SwapTxInfo{..}, aScri
     foldSwaps f init = foldr f init swaps
   -- This allows the script to validate all inputs and outputs on only one script input.
   -- Ignores other script inputs being validated each time
-  in if atxInInfoOutRef (head (filter isScriptInput atxInfoInputs)) /= thisOutRef then True else
-    TRACE_IF_FALSE("Not the only type of script", "3", (onlyThisTypeOfScript thisValidator atxInfoInputs))
-    && case r of
+  in if atxInInfoOutRef (head (filter (isScriptThisInput thisValidator) atxInfoInputs)) /= thisOutRef then True else
+    case r of
       Cancel ->
         let
           signerIsOwner Swap{sOwner} = singleSigner == sOwner
@@ -249,7 +250,7 @@ swapValidator _ r SwapScriptContext{aScriptContextTxInfo = SwapTxInfo{..}, aScri
         let
           accumPayouts Swap{..} acc
             | sOwner == singleSigner = acc
-            | otherwise = foldr mergePayouts acc sSwapPayouts     
+            | otherwise = foldr mergePayouts acc sSwapPayouts
 
           -- assume all redeemers are accept, all the payouts should be paid (excpet those to the signer)
           payouts :: Map PubKeyHash Value
