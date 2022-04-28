@@ -3,6 +3,7 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE CPP #-}
 
 module Main where
 
@@ -26,7 +27,7 @@ import Data.String
 import qualified Data.Text as Text
 import Data.Traversable
 import Env
-import Ledger (POSIXTime, PubKeyHash)
+import Ledger (PubKeyHash)
 import Plutus.V1.Ledger.Ada
 import qualified Plutus.V1.Ledger.Ada as Ada
 import qualified Plutus.V1.Ledger.Value as Value
@@ -39,6 +40,7 @@ import System.Process
 import Test.Hspec
 
 import Canonical.JpgStore.BulkPurchase
+import AlwaysSucceed
 
 data Opts = Opts
   { optsSourceWalletAddressPath :: FilePath
@@ -55,11 +57,18 @@ data Config = Config
   , cProtocolParams :: Maybe FilePath
   , cPlutusScript :: FilePath
   , cScriptAddr :: Address
+  , cAlwaysSucceedScript :: FilePath
+  , cAlwaysSucceedAddr :: Address
   }
 
 data SwapAndDatum = SwapAndDatum
   { sadSwap :: Swap
   , sadDatumHash :: String
+  }
+
+data AlwaysSucceedDatumAndHash = AlwaysSucceedDatumAndHash
+  { asdahDatum     :: Integer
+  , asdahDatumHash :: String
   }
 
 type Swaps = [SwapAndDatum]
@@ -113,74 +122,36 @@ policy4 :: SelectPolicy
 policy4 = (!! 3)
 
 runTests :: Config -> IO ()
-runTests config = do
-  let
-    expiredDeadline = 0
-    expiresInYear3000 = 3250368000000
+runTests config = hspec $ aroundAllWith (createResources config) $ do
+  describe "single offer" $ do
+    context "without expiration" $ do
+      aroundWith (createSwaps config [swapSpec seller1 policy1]) $ do
+        it "can be purchased" $ \(resources, swaps) -> evalAccepts config resources swaps buyer
 
-  hspec $ aroundAllWith (createResources config) $ do
-    describe "single offer" $ do
-      context "without expiration" $ do
-        aroundWith (createSwaps config [swapSpec seller1 policy1]) $ do
-          it "can be purchased" $ \(resources, swaps) -> evalBuys config resources swaps buyer
+        it "can be cancelled by owner" $ \(resources, swaps) -> evalCancelSwaps config resources swaps seller1
 
-          it "can be cancelled by owner" $ \(resources, swaps) -> evalCancelSwaps config resources swaps seller1
+        context "buyer counter offers" $ do
+          aroundWith (createCounterOffer config) $ do
+            it "seller can accept offer"
+              $ \(resources, swaps, offer) -> evalAccept config resources (head swaps) offer
 
-          it "cannot be closed"
-            $ \(resources, swaps) -> evalCloseSwaps config resources swaps marketplace `shouldThrow` isEvalException
+  describe "multiple offers" $ do
+    context "from same seller" $ do
+      aroundWith (createSwaps config [swapSpec seller1 policy1, swapSpec seller1 policy2]) $ do
+        it "can be cancelled in bulk" $ \(resources, swaps) -> do
+          evalCancelSwaps config resources swaps seller1
 
-          context "buyer counter offers" $ do
-            aroundWith (createCounterOffer config) $ do
-              it "seller can accept offer"
-                $ \(resources, swaps, offer) -> evalAccept config resources (head swaps) offer
+    context "from multiple sellers" $ do
+      context "that have no expiration" $ do
+        aroundWith (createSwaps config [swapSpec seller1 policy1, swapSpec seller2 policy3]) $ do
+          it "cannot be cancelled in bulk" $ \(resources, swaps) -> do
+            evalCancelSwaps config resources swaps seller1 `shouldThrow` isEvalException
 
-      context "that has *not* expired" $ do
-        aroundWith (createSwaps config [(swapSpec seller1 policy1) { specDeadline = Just expiresInYear3000 }]) $ do
-          it "can be purchased" $ \(resources, swaps) -> evalBuys config resources swaps buyer
+          it "can be purchased in bulk" $ \(resources, swaps) -> do
+            evalAccepts config resources swaps buyer
 
-          it "can be cancelled by owner" $ \(resources, swaps) -> evalCancelSwaps config resources swaps seller1
-
-          it "cannot be closed"
-            $ \(resources, swaps) -> evalCloseSwaps config resources swaps marketplace `shouldThrow` isEvalException
-
-      context "that has expired" $ do
-        aroundWith (createSwaps config [(swapSpec seller1 policy1) { specDeadline = Just expiredDeadline }]) $ do
-
-          it "cannot be purchased"
-            $ \(resources, swaps) -> evalBuys config resources swaps buyer `shouldThrow` isEvalException
-
-          it "can be cancelled by owner" $ \(resources, swaps) -> evalCancelSwaps config resources swaps seller1
-
-          it "can be closed by anyone" $ \(resources, swaps) -> evalCloseSwaps config resources swaps marketplace
-
-    describe "multiple offers" $ do
-      context "from same seller" $ do
-        aroundWith (createSwaps config [swapSpec seller1 policy1, swapSpec seller1 policy2]) $ do
-          it "can be cancelled in bulk" $ \(resources, swaps) -> do
-            evalCancelSwaps config resources swaps seller1
-
-      context "from multiple sellers" $ do
-        context "that have no expiration" $ do
-          aroundWith (createSwaps config [swapSpec seller1 policy1, swapSpec seller2 policy3]) $ do
-            it "cannot be cancelled in bulk" $ \(resources, swaps) -> do
-              evalCancelSwaps config resources swaps seller1 `shouldThrow` isEvalException
-
-            it "can be purchased in bulk" $ \(resources, swaps) -> do
-              evalBuys config resources swaps buyer
-
-        context "that have expired" $ do
-          aroundWith
-              (createSwaps
-                config
-                [ (swapSpec seller1 policy1) { specDeadline = Just expiredDeadline }
-                , (swapSpec seller2 policy3) { specDeadline = Just expiredDeadline }
-                ]
-              )
-            $ do
-                it "cannot be purchased"
-                  $ \(resources, swaps) -> evalBuys config resources swaps buyer `shouldThrow` isEvalException
-
-                it "can be closed by anyone" $ \(resources, swaps) -> evalCloseSwaps config resources swaps marketplace
+          it "Can't be purchased if another script is an input" $ \(resources, swaps) -> do
+            evalAcceptsWithAlwaysSucceeds config resources swaps buyer `shouldThrow` isEvalException
 
 main :: IO ()
 main = do
@@ -220,7 +191,7 @@ main = do
 
     withConfig run =
       withPlutusFile (optsTestnetMagic opts)
-        $ \plutusScript scriptAddr -> withProtocolParams (optsTestnetMagic opts) $ \pp -> withTempDir $ \dir ->
+        $ \plutusScript scriptAddr alwaysSucceedScript alwaysSucceedAddr -> withProtocolParams (optsTestnetMagic opts) $ \pp -> withTempDir $ \dir ->
             run $ Config
               { cSourceWalletSkeyPath = optsSourceWalletSkeyPath opts
               , cSourceWalletAddressPath = optsSourceWalletAddressPath opts
@@ -229,6 +200,8 @@ main = do
               , cPlutusScript = plutusScript
               , cScriptAddr = scriptAddr
               , cTestnetMagic = optsTestnetMagic opts
+              , cAlwaysSucceedScript = alwaysSucceedScript
+              , cAlwaysSucceedAddr = alwaysSucceedAddr
               }
 
   withConfig runTests
@@ -289,8 +262,8 @@ evalAccept config@Config {..} Resources {..} theSwap offer = do
 
   waitForNextBlock cTestnetMagic
 
-evalBuys :: Config -> Resources -> [SwapAndDatum] -> SelectWallet -> IO ()
-evalBuys config@Config {..} Resources {..} swaps buyerW = do
+evalAccepts :: Config -> Resources -> [SwapAndDatum] -> SelectWallet -> IO ()
+evalAccepts config@Config {..} Resources {..} swaps buyerW = do
   let
     buyerAddr = walletAddr . buyerW $ rWallets
     mergePayouts = fmap (uncurry Payout) . Map.toList . foldr (Map.unionWith mappend) mempty . fmap
@@ -301,7 +274,46 @@ evalBuys config@Config {..} Resources {..} swaps buyerW = do
   eval evalConfig $ do
     (payouts, assets) <-
       fmap (bimap (mergePayouts . mconcat) (toTxValue . mconcat) . unzip) . forScriptInputs config swaps $ \s utxo -> do
-        scriptInput utxo cPlutusScript s Buy
+        scriptInput utxo cPlutusScript s Accept
+        pure (sSwapPayouts s, sSwapValue s)
+
+    void $ output buyerAddr (assets <> "1758582 lovelace")
+
+    payoutTotal <- fmap mconcat . for payouts $ \Payout {..} ->
+      let txValue = toTxValue pValue in txValue <$ output (lookupWalletAddr pAddress rWallets) txValue
+
+    void $ selectInputs payoutTotal buyerAddr
+
+    void $ selectCollateralInput buyerAddr
+    void $ balanceNonAdaAssets buyerAddr
+    start <- currentSlot
+    timerange start (start + 100)
+    changeAddress buyerAddr
+    sign . walletSkeyPath . buyerW $ rWallets
+
+  waitForNextBlock cTestnetMagic
+
+evalAcceptsWithAlwaysSucceeds :: Config -> Resources -> [SwapAndDatum] -> SelectWallet -> IO ()
+evalAcceptsWithAlwaysSucceeds config@Config {..} Resources {..} swaps buyerW = do
+  let
+    buyerAddr = walletAddr . buyerW $ rWallets
+    mergePayouts = fmap (uncurry Payout) . Map.toList . foldr (Map.unionWith mappend) mempty . fmap
+      (\Payout {..} -> Map.singleton pAddress pValue)
+    evalConfig =
+      EvalConfig { ecOutputDir = Nothing -- Just "temp/cbor"
+                 , ecTestnet = cTestnetMagic, ecProtocolParams = cProtocolParams
+                 }
+
+  AlwaysSucceedDatumAndHash {..} <- lockAlwaysSucceed config $ buyer rWallets
+  waitForNextBlock cTestnetMagic
+
+  eval evalConfig $ do
+    lockUtxo <- liftIO . maybe (throwIO $ userError "firstScriptInput: no utxos") pure . listToMaybe =<<
+      findScriptInputs cAlwaysSucceedAddr asdahDatumHash
+    scriptInput lockUtxo cAlwaysSucceedScript asdahDatum (1 :: Integer)
+    (payouts, assets) <-
+      fmap (bimap (mergePayouts . mconcat) (toTxValue . mconcat) . unzip) . forScriptInputs config swaps $ \s utxo -> do
+        scriptInput utxo cPlutusScript s Accept
         pure (sSwapPayouts s, sSwapValue s)
 
     void $ output buyerAddr (assets <> "1758582 lovelace")
@@ -336,26 +348,6 @@ evalCancelSwaps config@Config {..} Resources {..} swaps canceller = do
 
   waitForNextBlock cTestnetMagic
 
-evalCloseSwaps :: Config -> Resources -> [SwapAndDatum] -> SelectWallet -> IO ()
-evalCloseSwaps config@Config {..} Resources {..} swaps closer = do
-  let
-    Wallet {..} = closer rWallets
-    evalConfig = mempty { ecTestnet = cTestnetMagic, ecProtocolParams = cProtocolParams }
-
-  eval evalConfig $ do
-    void $ forScriptInputs config swaps $ \s@Swap {..} utxo -> do
-      scriptInput utxo cPlutusScript s Close
-      void $ output (lookupWalletAddr sOwner rWallets) ("1758582 lovelace" <> toTxValue sSwapValue)
-
-    (cin, _) <- selectCollateralInput walletAddr
-    input . iUtxo $ cin
-    void $ balanceNonAdaAssets walletAddr
-    changeAddress walletAddr
-    void startNow
-    sign walletSkeyPath
-
-  waitForNextBlock cTestnetMagic
-
 forScriptInputs :: Config -> [SwapAndDatum] -> (Swap -> UTxO -> Tx a) -> Tx [a]
 forScriptInputs Config {..} swaps f = for swaps $ \SwapAndDatum {..} -> do
   utxos <- findScriptInputs cScriptAddr sadDatumHash
@@ -372,7 +364,6 @@ data SwapSpec = SwapSpec
   { specSeller :: SelectWallet
   , specPolicy :: SelectPolicy
   , specPayouts :: Wallets -> [Payout]
-  , specDeadline :: Maybe POSIXTime
   }
 
 stdPayouts :: SelectWallet -> Wallets -> [Payout]
@@ -383,22 +374,42 @@ stdPayouts seller wallets =
   ]
 
 swapSpec :: SelectWallet -> SelectPolicy -> SwapSpec
-swapSpec seller policy = SwapSpec seller policy (stdPayouts seller) Nothing
+swapSpec seller policy = SwapSpec seller policy (stdPayouts seller)
 
 createSwaps :: Config -> [SwapSpec] -> ActionWith (Resources, Swaps) -> ActionWith Resources
 createSwaps config specs runTest rs@Resources { rWallets, rPolicies } =
   let
     createSwap' SwapSpec {..} =
-      createSwap config (specSeller rWallets) (specPolicy rPolicies) (specPayouts rWallets) specDeadline
+      createSwap config (specSeller rWallets) (specPolicy rPolicies) (specPayouts rWallets)
   in bracket (traverse createSwap' specs)
    -- (cleanup . (wallets, ))
-                                          (\_ -> pure ()) (runTest . (rs, ))
+          (\_ -> pure ()) (runTest . (rs, ))
 
-createSwap :: Config -> Wallet -> Policy -> [Payout] -> Maybe POSIXTime -> IO SwapAndDatum
-createSwap config@Config {..} wallet@Wallet {..} policy payouts deadline = do
+lockAlwaysSucceed :: Config -> Wallet -> IO AlwaysSucceedDatumAndHash
+lockAlwaysSucceed Config {..} Wallet {..} = do
+  let
+    evalConfig = mempty { ecTestnet = cTestnetMagic, ecProtocolParams = cProtocolParams }
+    datum = 1 :: Integer
+
+  datumHash <- hashDatum $ toCliJson datum
+
+  eval evalConfig $ do
+    outputWithHash cAlwaysSucceedAddr "1500000 lovelace" datum
+    void $ selectInputs "7000000 lovelace" walletAddr
+    changeAddress walletAddr
+    void . balanceNonAdaAssets $ walletAddr
+    sign walletSkeyPath
+
+  waitForNextBlock cTestnetMagic
+
+  pure $ AlwaysSucceedDatumAndHash datum datumHash
+
+
+createSwap :: Config -> Wallet -> Policy -> [Payout] -> IO SwapAndDatum
+createSwap config@Config {..} wallet@Wallet {..} policy payouts = do
   let
     pValue = Value.singleton (fromString . policyId $ policy) "123456" 1
-    swapDatum = Swap (fromString walletPkh) pValue payouts deadline
+    swapDatum = Swap (fromString walletPkh) pValue payouts
     evalConfig = mempty { ecTestnet = cTestnetMagic, ecProtocolParams = cProtocolParams }
 
   datumHash <- hashDatum . toCliJson $ swapDatum
@@ -430,7 +441,7 @@ createCounterOffer Config {..} runTest (rs@Resources { rWallets }, swaps) = do
     buyerPayout = Payout buyerPkh sSwapValue
     offerValue = Ada.lovelaceValueOf 1500000
     txOfferValue = toTxValue offerValue
-    offerDatum = Swap buyerPkh offerValue [buyerPayout] Nothing
+    offerDatum = Swap buyerPkh offerValue [buyerPayout]
 
     evalConfig =
       EvalConfig { ecOutputDir = Nothing -- Just "temp/cbor"
@@ -487,19 +498,24 @@ withProtocolParams testnetMagic runTest = withSystemTempFile "protocol-params.js
   callProcess "cardano-cli" (["query", "protocol-parameters", "--out-file", fp] <> toTestnetFlags testnetMagic)
   runTest fp
 
-withPlutusFile :: Maybe Integer -> (FilePath -> Address -> IO a) -> IO a
-withPlutusFile testnetMagic runTest = withSystemTempFile "swap.plutus" $ \fp fh -> do
+withPlutusFile :: Maybe Integer -> (FilePath -> Address -> FilePath -> Address -> IO a) -> IO a
+withPlutusFile testnetMagic runTest = withSystemTempFile "swap.plutus" $ \fp fh -> withSystemTempFile "alwaysSucceeds.plutus" $ \fp' fh' -> do
   hClose fh
+  hClose fh'
   writePlutusFile fp
+  writeSucceedFile fp'
   scriptAddr <- readProcess
     "cardano-cli"
     (["address", "build", "--payment-script-file", fp] <> toTestnetFlags testnetMagic)
     mempty
+  succeedScriptAddr <- readProcess
+    "cardano-cli"
+    (["address", "build", "--payment-script-file", fp'] <> toTestnetFlags testnetMagic)
+    mempty
   putStrLn . mconcat $ ["Plutus script address: ", scriptAddr]
-  runTest fp scriptAddr
+  putStrLn . mconcat $ ["Plutus script address: ", succeedScriptAddr]
+  runTest fp scriptAddr fp' succeedScriptAddr
 
-
-{-# HLINT ignore withPolicies "Avoid lambda" #-}
 withPolicies :: ([Policy] -> IO a) -> IO a
 withPolicies = with (mapM (\n -> managed (withPolicy n)) [0 .. 3])
 
