@@ -163,9 +163,12 @@ mapInsertWith f k v xs = case M.lookup k xs of
   Nothing -> M.insert k v xs
   Just v' -> M.insert k (f v v') xs
 
+absoluteValueAdd :: Value -> Value -> Value
+absoluteValueAdd x y = unionWith (\x' y' -> abs x' + abs y') x y
+
 mergePayouts :: Payout -> Map PubKeyHash Value -> Map PubKeyHash Value
 mergePayouts Payout {..} =
-  mapInsertWith (+) pAddress pValue
+  mapInsertWith absoluteValueAdd pAddress pValue
 
 paidAtleastTo :: [SwapTxOut] -> PubKeyHash -> Value -> Bool
 paidAtleastTo outputs pkh val = valuePaidTo' outputs pkh `geq` val
