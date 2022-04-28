@@ -41,7 +41,7 @@ wrap  :: forall a b c .
 wrap f a b c
   = check
     ( f
-        ( FROM_BUILT_IN_DATA("datum failed", "-1", a))
-        ( FROM_BUILT_IN_DATA("redeemer failed", "-2", b))
-        ( FROM_BUILT_IN_DATA("script context failed", "-3", c))
+        ( FROM_BUILT_IN_DATA("datum failed", "-1", a, a))
+        ( FROM_BUILT_IN_DATA("redeemer failed", "-2", b, b))
+        ( FROM_BUILT_IN_DATA("script context failed", "-3", c, c))
     )

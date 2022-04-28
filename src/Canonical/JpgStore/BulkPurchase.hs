@@ -220,10 +220,10 @@ swapValidator _ r SwapScriptContext{aScriptContextTxInfo = SwapTxInfo{..}, aScri
     thisValidator :: ValidatorHash
     thisValidator = ownHash' atxInfoInputs thisOutRef
 
-    convertDatum :: forall a. DataConstraint(a) => Datum -> a
+    convertDatum :: Datum -> Swap
     convertDatum d =
-      let a = getDatum d
-      in FROM_BUILT_IN_DATA("found datum that is not a swap", "2", a)
+      let theSwap = getDatum d
+      in FROM_BUILT_IN_DATA("found datum that is not a swap", "2", theSwap, Swap)
 
     swaps :: [Swap]
     swaps = map (\(_, d) -> convertDatum d) atxInfoData
@@ -231,7 +231,7 @@ swapValidator _ r SwapScriptContext{aScriptContextTxInfo = SwapTxInfo{..}, aScri
     outputsAreValid :: Map PubKeyHash Value -> Bool
     outputsAreValid = validateOutputConstraints atxInfoOutputs
 
-    foldSwaps :: (Swap -> a -> a) -> a -> a
+    foldSwaps :: (Swap -> Map PubKeyHash Value -> Map PubKeyHash Value) -> Map PubKeyHash Value -> Map PubKeyHash Value
     foldSwaps f init = foldr f init swaps
   -- This allows the script to validate all inputs and outputs on only one script input.
   -- Ignores other script inputs being validated each time
@@ -244,7 +244,7 @@ swapValidator _ r SwapScriptContext{aScriptContextTxInfo = SwapTxInfo{..}, aScri
           TRACE_IF_FALSE("signer is not the owner", "4", (all signerIsOwner swaps))
 
       Accept ->
-        -- Acts like a Buy, but we ignore any payouts that go to the signer of the
+        -- Acts like a buy, but we ignore any payouts that go to the signer of the
         -- transaction. This allows the seller to accept an offer from a buyer that
         -- does not pay the seller as much as they requested
         let
