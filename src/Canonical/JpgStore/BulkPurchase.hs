@@ -41,32 +41,32 @@ import System.FilePath
 #include "../DebugUtilities.h"
 
 data SwapAddress = SwapAddress
-  { aaddressCredential :: Credential
-  , aaddressStakingCredential :: BuiltinData
+  { sAddressCredential :: Credential
+  , sAddressStakingCredential :: BuiltinData
   }
 
 data SwapTxOut = SwapTxOut
-  { atxOutAddress :: SwapAddress
-  , atxOutValue :: Value
-  , atxOutDatumHash :: BuiltinData
+  { sTxOutAddress :: SwapAddress
+  , sTxOutValue :: Value
+  , sTxOutDatumHash :: BuiltinData
   }
 
 data SwapTxInInfo = SwapTxInInfo
-  { atxInInfoOutRef :: TxOutRef
-  , atxInInfoResolved :: SwapTxOut
+  { sTxInInfoOutRef :: TxOutRef
+  , sTxInInfoResolved :: SwapTxOut
   }
 
 data SwapTxInfo = SwapTxInfo
-  { atxInfoInputs :: [SwapTxInInfo]
-  , atxInfoOutputs :: [SwapTxOut]
-  , atxInfoFee :: BuiltinData
-  , atxInfoMint :: BuiltinData
-  , atxInfoDCert :: BuiltinData
-  , atxInfoWdrl :: BuiltinData
-  , atxInfoValidRange :: BuiltinData
-  , atxInfoSignatories :: [PubKeyHash]
-  , atxInfoData :: [(DatumHash, Datum)]
-  , atxInfoId :: BuiltinData
+  { sTxInfoInputs :: [SwapTxInInfo]
+  , sTxInfoOutputs :: [SwapTxOut]
+  , sTxInfoFee :: BuiltinData
+  , sTxInfoMint :: BuiltinData
+  , sTxInfoDCert :: BuiltinData
+  , sTxInfoWdrl :: BuiltinData
+  , sTxInfoValidRange :: BuiltinData
+  , sTxInfoSignatories :: [PubKeyHash]
+  , sTxInfoData :: [(DatumHash, Datum)]
+  , sTxInfoId :: BuiltinData
   }
 
 {-# HLINT ignore SwapScriptPurpose #-}
@@ -74,8 +74,8 @@ data SwapScriptPurpose
     = ASpending TxOutRef
 
 data SwapScriptContext = SwapScriptContext
-  { aScriptContextTxInfo :: SwapTxInfo
-  , aScriptContextPurpose :: SwapScriptPurpose
+  { sScriptContextTxInfo :: SwapTxInfo
+  , sScriptContextPurpose :: SwapScriptPurpose
   }
 
 valuePaidTo' :: [SwapTxOut] -> PubKeyHash -> Value
@@ -84,8 +84,8 @@ valuePaidTo' outs pkh = mconcat (pubKeyOutputsAt' pkh outs)
 pubKeyOutputsAt' :: PubKeyHash -> [SwapTxOut] -> [Value]
 pubKeyOutputsAt' pk outs =
   let
-    flt SwapTxOut { atxOutAddress = SwapAddress (PubKeyCredential pk') _, atxOutValue }
-      | pk == pk' = Just atxOutValue
+    flt SwapTxOut { sTxOutAddress = SwapAddress (PubKeyCredential pk') _, sTxOutValue }
+      | pk == pk' = Just sTxOutValue
       | otherwise = Nothing
     flt _ = Nothing
   in mapMaybe flt outs
@@ -95,8 +95,8 @@ ownHash' ins txOutRef = go ins where
     go = \case
       [] -> TRACE_ERROR("The impossible happened", "-1")
       SwapTxInInfo {..} :xs ->
-        if atxInInfoOutRef == txOutRef then
-          case atxOutAddress atxInInfoResolved of
+        if sTxInInfoOutRef == txOutRef then
+          case sTxOutAddress sTxInInfoResolved of
             SwapAddress (ScriptCredential s) _ -> s
             _ -> TRACE_ERROR("The impossible happened", "-1")
         else
@@ -136,7 +136,7 @@ data Redeemer
 -- Utilities
 -------------------------------------------------------------------------------
 isScriptThisInput :: ValidatorHash -> SwapTxInInfo -> Bool
-isScriptThisInput vh txIn = case aaddressCredential (atxOutAddress  (atxInInfoResolved txIn)) of
+isScriptThisInput vh txIn = case sAddressCredential (sTxOutAddress  (sTxInInfoResolved txIn)) of
   ScriptCredential vh'
     | vh' == vh -> True
     | otherwise -> TRACE_ERROR("Wrong type of script input", "3")
@@ -147,9 +147,9 @@ onlyThisTypeOfScript thisValidator = go where
   go = \case
     [] -> True
     SwapTxInInfo
-      { atxInInfoResolved = SwapTxOut
-        { atxOutAddress = SwapAddress
-          { aaddressCredential = ScriptCredential vh
+      { sTxInInfoResolved = SwapTxOut
+        { sTxOutAddress = SwapAddress
+          { sAddressCredential = ScriptCredential vh
           }
         }
       } : xs ->  if vh == thisValidator then
@@ -210,15 +210,15 @@ validateOutputConstraints outputs constraints = all (\(pkh, v) -> paidAtleastTo 
 -- Every branch but user initiated cancel requires checking the input
 -- to ensure there is only one script input.
 swapValidator :: Swap -> Redeemer -> SwapScriptContext -> Bool
-swapValidator _ r SwapScriptContext{aScriptContextTxInfo = SwapTxInfo{..}, aScriptContextPurpose = ASpending thisOutRef} =
+swapValidator _ r SwapScriptContext{sScriptContextTxInfo = SwapTxInfo{..}, sScriptContextPurpose = ASpending thisOutRef} =
   let
     singleSigner :: PubKeyHash
-    singleSigner = case atxInfoSignatories of
+    singleSigner = case sTxInfoSignatories of
       [x] -> x
       _ -> TRACE_ERROR("single signer expected", "1")
 
     thisValidator :: ValidatorHash
-    thisValidator = ownHash' atxInfoInputs thisOutRef
+    thisValidator = ownHash' sTxInfoInputs thisOutRef
 
     convertDatum :: Datum -> Swap
     convertDatum d =
@@ -226,16 +226,16 @@ swapValidator _ r SwapScriptContext{aScriptContextTxInfo = SwapTxInfo{..}, aScri
       in FROM_BUILT_IN_DATA("found datum that is not a swap", "2", theSwap, Swap)
 
     swaps :: [Swap]
-    swaps = map (\(_, d) -> convertDatum d) atxInfoData
+    swaps = map (\(_, d) -> convertDatum d) sTxInfoData
 
     outputsAreValid :: Map PubKeyHash Value -> Bool
-    outputsAreValid = validateOutputConstraints atxInfoOutputs
+    outputsAreValid = validateOutputConstraints sTxInfoOutputs
 
     foldSwaps :: (Swap -> Map PubKeyHash Value -> Map PubKeyHash Value) -> Map PubKeyHash Value -> Map PubKeyHash Value
     foldSwaps f init = foldr f init swaps
   -- This allows the script to validate all inputs and outputs on only one script input.
   -- Ignores other script inputs being validated each time
-  in if atxInInfoOutRef (head (filter (isScriptThisInput thisValidator) atxInfoInputs)) /= thisOutRef then True else
+  in if sTxInInfoOutRef (head (filter (isScriptThisInput thisValidator) sTxInfoInputs)) /= thisOutRef then True else
     case r of
       Cancel ->
         let
