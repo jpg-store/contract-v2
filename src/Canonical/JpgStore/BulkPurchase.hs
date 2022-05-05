@@ -20,6 +20,9 @@ module Canonical.JpgStore.BulkPurchase
   , writePlutusFile
   ) where
 
+{- HLINT ignore module "Eta reduce" -}
+{- HLINT ignore module "Avoid lambda" -}
+
 import Canonical.Shared
 import qualified Cardano.Api as Api
 import Cardano.Api.Shelley (PlutusScript(..), PlutusScriptV1)
@@ -48,7 +51,7 @@ data SwapAddress = SwapAddress
 data SwapTxOut = SwapTxOut
   { sTxOutAddress :: SwapAddress
   , sTxOutValue :: Value
-  , sTxOutDatumHash :: BuiltinData
+  , sTxOutDatumHash :: Maybe DatumHash
   }
 
 data SwapTxInInfo = SwapTxInInfo
@@ -69,7 +72,7 @@ data SwapTxInfo = SwapTxInfo
   , sTxInfoId :: BuiltinData
   }
 
-{-# HLINT ignore SwapScriptPurpose #-}
+{- HLINT ignore SwapScriptPurpose -}
 data SwapScriptPurpose
     = ASpending TxOutRef
 
@@ -164,7 +167,7 @@ mapInsertWith f k v xs = case M.lookup k xs of
   Just v' -> M.insert k (f v v') xs
 
 absoluteValueAdd :: Value -> Value -> Value
-absoluteValueAdd x y = unionWith (\x' y' -> abs x' + abs y') x y
+absoluteValueAdd = unionWith (\x' y' -> abs x' + abs y')
 
 mergePayouts :: Payout -> Map PubKeyHash Value -> Map PubKeyHash Value
 mergePayouts Payout {..} =
@@ -225,8 +228,22 @@ swapValidator _ r SwapScriptContext{sScriptContextTxInfo = SwapTxInfo{..}, sScri
       let theSwap = getDatum d
       in FROM_BUILT_IN_DATA("found datum that is not a swap", "2", theSwap, Swap)
 
+    lookupDatum :: DatumHash -> Datum
+    lookupDatum dh =
+      let
+          go = \case
+            [] -> Nothing
+            (k, v):xs' -> if k == dh then Just v else go xs'
+      in case go sTxInfoData of
+        Nothing -> TRACE_ERROR("The impossible happened", "-1")
+        Just d -> d
+
+    scriptInputs :: [SwapTxInInfo]
+    scriptInputs = filter (isScriptThisInput thisValidator) sTxInfoInputs
+
     swaps :: [Swap]
-    swaps = map (\(_, d) -> convertDatum d) sTxInfoData
+    swaps = mapMaybe
+      (\i -> fmap (\d -> convertDatum (lookupDatum d)) (sTxOutDatumHash (sTxInInfoResolved i))) scriptInputs
 
     outputsAreValid :: Map PubKeyHash Value -> Bool
     outputsAreValid = validateOutputConstraints sTxInfoOutputs
@@ -235,7 +252,7 @@ swapValidator _ r SwapScriptContext{sScriptContextTxInfo = SwapTxInfo{..}, sScri
     foldSwaps f init = foldr f init swaps
   -- This allows the script to validate all inputs and outputs on only one script input.
   -- Ignores other script inputs being validated each time
-  in if sTxInInfoOutRef (head (filter (isScriptThisInput thisValidator) sTxInfoInputs)) /= thisOutRef then True else
+  in if sTxInInfoOutRef (head scriptInputs) /= thisOutRef then True else
     case r of
       Cancel ->
         let
