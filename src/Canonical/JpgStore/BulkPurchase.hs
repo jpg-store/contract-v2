@@ -124,8 +124,6 @@ data Payout = Payout
 data Swap = Swap
   { sOwner :: !PubKeyHash
   -- ^ Used for the signer check on Cancel
-  , sSwapValue :: !Value
-  -- ^ Value the owner is offering up
   , sSwapPayouts :: ![Payout]
   -- ^ Divvy up the payout to different address for Swap
   }
@@ -133,7 +131,6 @@ data Swap = Swap
 data Redeemer
   = Cancel
   | Accept
-
 
 -------------------------------------------------------------------------------
 -- Utilities
@@ -144,22 +141,6 @@ isScriptThisInput vh txIn = case sAddressCredential (sTxOutAddress  (sTxInInfoRe
     | vh' == vh -> True
     | otherwise -> TRACE_ERROR("Wrong type of script input", "3")
   _ -> False
-
-onlyThisTypeOfScript :: ValidatorHash -> [SwapTxInInfo] -> Bool
-onlyThisTypeOfScript thisValidator = go where
-  go = \case
-    [] -> True
-    SwapTxInInfo
-      { sTxInInfoResolved = SwapTxOut
-        { sTxOutAddress = SwapAddress
-          { sAddressCredential = ScriptCredential vh
-          }
-        }
-      } : xs ->  if vh == thisValidator then
-              go xs
-            else
-              TRACE_IF_FALSE("Bad validator input", "100", False)
-    _ : xs -> go xs
 
 mapInsertWith :: Eq k => (a -> a -> a) -> k -> a -> Map k a -> Map k a
 mapInsertWith f k v xs = case M.lookup k xs of
@@ -182,13 +163,9 @@ instance Eq Payout where
   x == y = pAddress x == pAddress y && pValue x == pValue y
 
 instance Eq Swap where
-  x == y =
-    sOwner x
-      == sOwner y
-      && sSwapValue x
-      == sSwapValue y
-      && sSwapPayouts x
-      == sSwapPayouts y
+  x == y
+    =  sOwner       x == sOwner       y
+    && sSwapPayouts x == sSwapPayouts y
 
 instance Eq Redeemer where
   x == y = case (x, y) of
@@ -229,14 +206,10 @@ swapValidator _ r SwapScriptContext{sScriptContextTxInfo = SwapTxInfo{..}, sScri
       in FROM_BUILT_IN_DATA("found datum that is not a swap", "2", theSwap, Swap)
 
     lookupDatum :: DatumHash -> Datum
-    lookupDatum dh =
-      let
-          go = \case
-            [] -> Nothing
-            (k, v):xs' -> if k == dh then Just v else go xs'
-      in case go sTxInfoData of
-        Nothing -> TRACE_ERROR("The impossible happened", "-1")
-        Just d -> d
+    lookupDatum dh = go sTxInfoData where
+      go = \case
+        [] -> TRACE_ERROR("The impossible happened", "-1")
+        (k, v):xs' -> if k == dh then v else go xs'
 
     scriptInputs :: [SwapTxInInfo]
     scriptInputs = filter (isScriptThisInput thisValidator) sTxInfoInputs
@@ -248,30 +221,29 @@ swapValidator _ r SwapScriptContext{sScriptContextTxInfo = SwapTxInfo{..}, sScri
     outputsAreValid :: Map PubKeyHash Value -> Bool
     outputsAreValid = validateOutputConstraints sTxInfoOutputs
 
-    foldSwaps :: (Swap -> Map PubKeyHash Value -> Map PubKeyHash Value) -> Map PubKeyHash Value -> Map PubKeyHash Value
-    foldSwaps f init = foldr f init swaps
   -- This allows the script to validate all inputs and outputs on only one script input.
   -- Ignores other script inputs being validated each time
   in if sTxInInfoOutRef (head scriptInputs) /= thisOutRef then True else
     case r of
       Cancel ->
         let
+          signerIsOwner :: Swap -> Bool
           signerIsOwner Swap{sOwner} = singleSigner == sOwner
-        in
-          TRACE_IF_FALSE("signer is not the owner", "4", (all signerIsOwner swaps))
+        in TRACE_IF_FALSE("signer is not the owner", "4", (all signerIsOwner swaps))
 
       Accept ->
         -- Acts like a buy, but we ignore any payouts that go to the signer of the
         -- transaction. This allows the seller to accept an offer from a buyer that
         -- does not pay the seller as much as they requested
         let
+          accumPayouts :: Swap -> Map PubKeyHash Value -> Map PubKeyHash Value
           accumPayouts Swap{..} acc
             | sOwner == singleSigner = acc
             | otherwise = foldr mergePayouts acc sSwapPayouts
 
           -- assume all redeemers are accept, all the payouts should be paid (excpet those to the signer)
           payouts :: Map PubKeyHash Value
-          payouts = foldSwaps accumPayouts mempty
+          payouts = foldr accumPayouts mempty swaps
         in TRACE_IF_FALSE("wrong output", "5", (outputsAreValid payouts))
 -------------------------------------------------------------------------------
 -- Entry Points
