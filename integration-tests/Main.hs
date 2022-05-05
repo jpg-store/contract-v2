@@ -141,6 +141,40 @@ runTests config = hspec $ aroundAllWith (createResources config) $ do
         it "can be cancelled in bulk" $ \(resources, swaps) -> do
           evalCancelSwaps config resources swaps seller1
 
+      context "for same offer" $ do
+        aroundWith (createSwaps config [swapSpec seller1 policy1, swapSpec seller1 policy1]) $ do
+          it "cannot be shorted" $ \(resources, swaps) -> do
+            let
+              buyerAddr = walletAddr . buyer $ rWallets resources
+              evalConfig =
+                EvalConfig
+                  { ecOutputDir = Nothing
+                  , ecTestnet = cTestnetMagic config
+                  , ecProtocolParams = cProtocolParams config
+                  }
+            eval evalConfig $ do
+              assets <-
+                fmap (toTxValue . mconcat) . forScriptInputs config swaps $ \s utxo -> do
+                  scriptInput utxo (cPlutusScript config) s Accept
+                  pure . sSwapValue $ s
+
+              void $ output buyerAddr (assets <> "1758582 lovelace")
+
+              payoutTotal <- fmap mconcat . for (sSwapPayouts . sadSwap . head $ swaps) $ \Payout {..} ->
+                let txValue = toTxValue pValue in txValue <$ output (lookupWalletAddr pAddress (rWallets resources)) txValue
+
+              void $ selectInputs payoutTotal buyerAddr
+
+              void $ selectCollateralInput buyerAddr
+              void $ balanceNonAdaAssets buyerAddr
+              start <- currentSlot
+              timerange start (start + 100)
+              changeAddress buyerAddr
+              sign . walletSkeyPath . buyer $ rWallets resources
+
+            waitForNextBlock . cTestnetMagic $ config
+
+
     context "from multiple sellers" $ do
       context "that have no expiration" $ do
         aroundWith (createSwaps config [swapSpec seller1 policy1, swapSpec seller2 policy3]) $ do
@@ -415,9 +449,10 @@ createSwap config@Config {..} wallet@Wallet {..} policy payouts = do
   datumHash <- hashDatum . toCliJson $ swapDatum
 
   -- if there is an existing swap that is the same, reuse it
-  existingScriptInput <- filter ((== Just datumHash) . utxoDatumHash) <$> queryUtxos walletAddr cTestnetMagic
+  -- existingScriptInput <- filter ((== Just datumHash) . utxoDatumHash) <$> queryUtxos walletAddr cTestnetMagic
 
-  when (null existingScriptInput) $ do
+  --when (null existingScriptInput) $ do
+  do
     txValue <- evalMint config wallet policy "123456" 1
     waitForNextBlock cTestnetMagic
 
@@ -516,6 +551,7 @@ withPlutusFile testnetMagic runTest = withSystemTempFile "swap.plutus" $ \fp fh 
   putStrLn . mconcat $ ["Plutus script address: ", succeedScriptAddr]
   runTest fp scriptAddr fp' succeedScriptAddr
 
+{- HLINT ignore "Avoid lambda" -}
 withPolicies :: ([Policy] -> IO a) -> IO a
 withPolicies = with (mapM (\n -> managed (withPolicy n)) [0 .. 3])
 
