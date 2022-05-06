@@ -175,8 +175,6 @@ runTests config@Config{..} = hspec $ aroundAllWith (createResources config) $ do
 
       let theAsset = show thePolicyId <> ".313233343536"
 
-
-
       eval evalConfig $ do
         void $ output (walletAddr royaltyWallet) "1000000 lovelace"
         void $ output (walletAddr marketplaceWallet) "1000000 lovelace"
