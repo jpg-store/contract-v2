@@ -131,11 +131,11 @@ satisfyExpectation
 satisfyExpectation theValue (cs, (count, expectedTokenMap))
   = case M.lookup cs $ getValue theValue of
       Just actualTokenMap -> case validateTokenMap actualTokenMap expectedTokenMap of
-         Just leftOverMap
-            -> traceIfFalse "failed to validate policy count"
-             $ length (M.keys leftOverMap) >= count
-         Nothing -> trace "failed to validate token map" False
-      Nothing -> trace "failed to find policy" False
+         Just leftOverMap ->
+           let validPolicyCount = length (M.keys leftOverMap) >= count
+           in TRACE_IF_FALSE("failed to validate policy count", "10", validPolicyCount)
+         Nothing -> TRACE("failed to validate token map", "11", False)
+      Nothing -> TRACE("failed to find policy", "12", False)
 
 validateTokenMap :: M.Map TokenName Integer
                  -> M.Map TokenName Integer
