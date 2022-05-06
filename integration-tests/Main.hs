@@ -39,6 +39,7 @@ import System.IO.Temp
 import System.Process
 import Test.Hspec
 import qualified PlutusTx.Functor as P
+import qualified PlutusTx.AssocMap as M
 
 import Canonical.JpgStore.BulkPurchase
 import AlwaysSucceed
@@ -130,17 +131,79 @@ policy4 :: SelectPolicy
 policy4 = (!! 3)
 
 runTests :: Config -> IO ()
-runTests config = hspec $ aroundAllWith (createResources config) $ do
+runTests config@Config{..} = hspec $ aroundAllWith (createResources config) $ do
   describe "single offer" $ do
-    aroundWith (createSwaps config [swapSpec seller1 policy1]) $ do
-      it "can be purchased" $ \(resources, swaps) -> evalAccepts config resources swaps buyer
+    it "can be for only the policy id" $ \Resources{..} -> do
+      let
+        thePolicy = head $ rPolicies
 
-      it "can be cancelled by owner" $ \(resources, swaps) -> evalCancelSwaps config resources swaps seller1
+        thePolicyId :: Value.CurrencySymbol
+        thePolicyId = fromString $ policyId thePolicy
 
-      context "buyer counter offers" $ do
-        aroundWith (createCounterOffer config) $ do
-          it "seller can accept offer"
-            $ \(resources, swaps, offer) -> evalAccept config resources (head swaps) offer
+        royaltyWallet = royalties rWallets
+        marketplaceWallet = marketplace rWallets
+        buyerWallet = buyer rWallets
+
+        payouts =
+          [ Payout (fromString $ walletPkh buyerWallet) (M.singleton thePolicyId (1, M.empty))
+          , Payout (fromString $ walletPkh marketplaceWallet) (valueToExpectedValue $ lovelaceValueOf 1000000)
+          , Payout (fromString $ walletPkh royaltyWallet) (valueToExpectedValue $ lovelaceValueOf 1000000)
+          ]
+        swapDatum = Swap (fromString . walletPkh . buyer $ rWallets) payouts
+        evalConfig = mempty
+          { ecTestnet = cTestnetMagic
+          , ecProtocolParams = cProtocolParams
+          }
+
+        buyerAddr = walletAddr buyerWallet
+
+      eval evalConfig $ do
+        outputWithHash cScriptAddr "5000000 lovelace" swapDatum
+        void $ selectInputs "7000000 lovelace " buyerAddr
+        changeAddress buyerAddr
+        void . balanceNonAdaAssets $ buyerAddr
+        sign $ walletSkeyPath buyerWallet
+
+      waitForNextBlock cTestnetMagic
+
+      let
+        sellerWallet = head $ sellers rWallets
+        sellerAddr = walletAddr sellerWallet
+
+      void $ evalMint config sellerWallet thePolicy "123456" 1
+      waitForNextBlock cTestnetMagic
+
+      let theAsset = show thePolicyId <> ".313233343536"
+
+
+
+      eval evalConfig $ do
+        void $ output (walletAddr royaltyWallet) "1000000 lovelace"
+        void $ output (walletAddr marketplaceWallet) "1000000 lovelace"
+        void $ output buyerAddr $ fromString $ "2000000 lovelace + 1 " <> theAsset
+
+        void $ selectInputs (fromString $ "2000000 lovelace + 1 " <> theAsset) sellerAddr
+
+        void $ selectCollateralInput sellerAddr
+        void $ balanceNonAdaAssets sellerAddr
+        start <- currentSlot
+        timerange start (start + 100)
+        changeAddress sellerAddr
+        sign $ walletSkeyPath sellerWallet
+
+      waitForNextBlock cTestnetMagic
+
+  aroundWith (createSwaps config [swapSpec seller1 policy1]) $ do
+    it "can be purchased" $ \(resources, swaps) -> evalAccepts config resources swaps buyer
+
+    it "can be cancelled by owner" $ \(resources, swaps) -> evalCancelSwaps config resources swaps seller1
+
+    context "buyer counter offers" $ do
+      aroundWith (createCounterOffer config) $ do
+        it "seller can accept offer"
+          $ \(resources, swaps, offer) -> evalAccept config resources (head swaps) offer
+
+
 
   describe "multiple offers" $ do
     context "from same seller" $ do
@@ -156,13 +219,13 @@ runTests config = hspec $ aroundAllWith (createResources config) $ do
               evalConfig =
                 EvalConfig
                   { ecOutputDir = Nothing
-                  , ecTestnet = cTestnetMagic config
-                  , ecProtocolParams = cProtocolParams config
+                  , ecTestnet = cTestnetMagic
+                  , ecProtocolParams = cProtocolParams
                   }
             eval evalConfig $ do
               assets <-
                 fmap (toTxValue . mconcat) . forScriptInputs config swaps $ \(s, v) utxo -> do
-                  scriptInput utxo (cPlutusScript config) s Accept
+                  scriptInput utxo cPlutusScript s Accept
                   pure v
 
               void $ output buyerAddr (assets <> "1758582 lovelace")
@@ -180,8 +243,7 @@ runTests config = hspec $ aroundAllWith (createResources config) $ do
               changeAddress buyerAddr
               sign . walletSkeyPath . buyer $ rWallets resources
 
-            waitForNextBlock . cTestnetMagic $ config
-
+            waitForNextBlock cTestnetMagic
 
     context "from multiple sellers" $ do
       context "that have no expiration" $ do
@@ -466,6 +528,7 @@ createSwap config@Config {..} wallet@Wallet {..} policy payouts = do
     evalConfig = mempty { ecTestnet = cTestnetMagic, ecProtocolParams = cProtocolParams }
 
   datumHash <- hashDatum . toCliJson $ swapDatum
+
 
   -- if there is an existing swap that is the same, reuse it
   -- existingScriptInput <- filter ((== Just datumHash) . utxoDatumHash) <$> queryUtxos walletAddr cTestnetMagic
