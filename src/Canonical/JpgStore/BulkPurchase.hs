@@ -13,11 +13,13 @@
 {-# LANGUAGE TypeFamilies #-}
 
 module Canonical.JpgStore.BulkPurchase
-  ( Payout(..)
+  ( ExpectedValue
+  , Payout(..)
   , Redeemer(..)
   , Swap(..)
   , swap
   , writePlutusFile
+  , unionExpectedValue
   ) where
 
 {- HLINT ignore module "Eta reduce" -}
@@ -39,7 +41,9 @@ import qualified PlutusTx.AssocMap as M
 import PlutusTx.AssocMap (Map)
 import PlutusTx.Prelude
 import Prelude (IO, print, putStrLn)
+import Plutus.V1.Ledger.Ada
 import System.FilePath
+import PlutusTx.These
 
 #include "../DebugUtilities.h"
 
@@ -81,6 +85,75 @@ data SwapScriptContext = SwapScriptContext
   , sScriptContextPurpose :: SwapScriptPurpose
   }
 
+type ExpectedValue = M.Map CurrencySymbol (Integer, M.Map TokenName Integer)
+
+{-# INLINABLE unionExpectedValue #-}
+unionExpectedValue :: ExpectedValue -> ExpectedValue -> ExpectedValue
+unionExpectedValue l r =
+    let
+        combined = M.union l r
+
+        innerUnThese k = case k of
+            This a    -> a
+            That b    -> b
+            These a b -> abs a + abs b
+
+        unThese k = case k of
+            This a    -> a
+            That b    -> b
+            These (ac, a) (bc, b) -> (abs ac + abs bc, fmap innerUnThese (M.union a b))
+
+    in unThese <$> combined
+
+expectedLovelaces :: ExpectedValue -> Integer
+expectedLovelaces e = fromMaybe 0 $  do
+  tm <- snd <$> M.lookup adaSymbol e
+  M.lookup adaToken tm
+
+subtractLovelaces :: ExpectedValue -> Integer -> ExpectedValue
+subtractLovelaces ev loves = fromMaybe ev $ do
+  (c, tm) <- M.lookup adaSymbol ev
+  oldLovelaces <- M.lookup adaToken tm
+  let newTm = M.insert adaToken (oldLovelaces - loves) tm
+  pure $ M.insert adaSymbol (c, newTm) ev
+
+-- For all currency symbols
+-- the value must have the currency symbol
+-- if it does then for all the tokens must be there with enough coins
+-- remove those entries
+satisfyExpectations :: ExpectedValue -> Value -> Bool
+satisfyExpectations ev v = all (satisfyExpectation v) $ M.toList ev
+
+satisfyExpectation
+  :: Value
+  -> (CurrencySymbol, (Integer, M.Map TokenName Integer))
+  -> Bool
+satisfyExpectation theValue (cs, (count, expectedTokenMap))
+  = case M.lookup cs $ getValue theValue of
+      Just actualTokenMap -> case validateTokenMap actualTokenMap expectedTokenMap of
+         Just leftOverMap
+            -> traceIfFalse "failed to validate policy count"
+             $ length (M.keys leftOverMap) >= count
+         Nothing -> trace "failed to validate token map" False
+      Nothing -> trace "failed to find policy" False
+
+validateTokenMap :: M.Map TokenName Integer
+                 -> M.Map TokenName Integer
+                 -> Maybe (M.Map TokenName Integer)
+validateTokenMap actual expected
+  = foldr (hasEnoughCoin actual) (Just actual)
+  $ M.toList expected
+
+hasEnoughCoin :: M.Map TokenName Integer
+              -> (TokenName, Integer)
+              -> Maybe (M.Map TokenName Integer)
+              -> Maybe (M.Map TokenName Integer)
+hasEnoughCoin tokenMap (tkn, count) mAccumMap  = mAccumMap >>= \accumMap ->
+  case M.lookup tkn tokenMap of
+    Just actualCount
+      | actualCount >= count -> Just $ M.delete tkn accumMap
+    _ -> Nothing
+
 valuePaidTo' :: [SwapTxOut] -> PubKeyHash -> Value
 valuePaidTo' outs pkh = mconcat (pubKeyOutputsAt' pkh outs)
 
@@ -118,7 +191,7 @@ unstableMakeIsData ''SwapTxInInfo
 
 data Payout = Payout
   { pAddress :: !PubKeyHash
-  , pValue :: !Value
+  , pValue :: !ExpectedValue
   }
 
 data Swap = Swap
@@ -147,15 +220,12 @@ mapInsertWith f k v xs = case M.lookup k xs of
   Nothing -> M.insert k v xs
   Just v' -> M.insert k (f v v') xs
 
-absoluteValueAdd :: Value -> Value -> Value
-absoluteValueAdd = unionWith (\x' y' -> abs x' + abs y')
-
-mergePayouts :: Payout -> Map PubKeyHash Value -> Map PubKeyHash Value
+mergePayouts :: Payout -> Map PubKeyHash ExpectedValue -> Map PubKeyHash ExpectedValue
 mergePayouts Payout {..} =
-  mapInsertWith absoluteValueAdd pAddress pValue
+  mapInsertWith unionExpectedValue pAddress pValue
 
-paidAtleastTo :: [SwapTxOut] -> PubKeyHash -> Value -> Bool
-paidAtleastTo outputs pkh val = valuePaidTo' outputs pkh `geq` val
+paidAtleastTo :: [SwapTxOut] -> PubKeyHash -> ExpectedValue -> Bool
+paidAtleastTo outputs pkh val = satisfyExpectations val (valuePaidTo' outputs pkh)
 -------------------------------------------------------------------------------
 -- Boilerplate
 -------------------------------------------------------------------------------
@@ -184,7 +254,7 @@ PlutusTx.unstableMakeIsData ''Redeemer
 -- check that each user is paid
 -- and the total is correct
 {-# HLINT ignore validateOutputConstraints "Use uncurry" #-}
-validateOutputConstraints :: [SwapTxOut] -> Map PubKeyHash Value -> Bool
+validateOutputConstraints :: [SwapTxOut] -> Map PubKeyHash ExpectedValue -> Bool
 validateOutputConstraints outputs constraints = all (\(pkh, v) -> paidAtleastTo outputs pkh v) (M.toList constraints)
 
 -- Every branch but user initiated cancel requires checking the input
@@ -218,7 +288,7 @@ swapValidator _ r SwapScriptContext{sScriptContextTxInfo = SwapTxInfo{..}, sScri
     swaps = mapMaybe
       (\i -> fmap (\d -> convertDatum (lookupDatum d)) (sTxOutDatumHash (sTxInInfoResolved i))) scriptInputs
 
-    outputsAreValid :: Map PubKeyHash Value -> Bool
+    outputsAreValid :: Map PubKeyHash ExpectedValue -> Bool
     outputsAreValid = validateOutputConstraints sTxInfoOutputs
 
   -- This allows the script to validate all inputs and outputs on only one script input.
@@ -236,14 +306,14 @@ swapValidator _ r SwapScriptContext{sScriptContextTxInfo = SwapTxInfo{..}, sScri
         -- transaction. This allows the seller to accept an offer from a buyer that
         -- does not pay the seller as much as they requested
         let
-          accumPayouts :: Swap -> Map PubKeyHash Value -> Map PubKeyHash Value
+          accumPayouts :: Swap -> Map PubKeyHash ExpectedValue -> Map PubKeyHash ExpectedValue
           accumPayouts Swap{..} acc
             | sOwner == singleSigner = acc
             | otherwise = foldr mergePayouts acc sSwapPayouts
 
           -- assume all redeemers are accept, all the payouts should be paid (excpet those to the signer)
-          payouts :: Map PubKeyHash Value
-          payouts = foldr accumPayouts mempty swaps
+          payouts :: Map PubKeyHash ExpectedValue
+          payouts = foldr accumPayouts M.empty swaps
         in TRACE_IF_FALSE("wrong output", "5", (outputsAreValid payouts))
 -------------------------------------------------------------------------------
 -- Entry Points

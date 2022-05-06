@@ -38,9 +38,16 @@ import System.IO
 import System.IO.Temp
 import System.Process
 import Test.Hspec
+import qualified PlutusTx.Functor as P
 
 import Canonical.JpgStore.BulkPurchase
 import AlwaysSucceed
+
+expectedValueToValue :: ExpectedValue -> Value.Value
+expectedValueToValue e = Value.Value $ P.fmap (\(_, x) -> x) e
+
+valueToExpectedValue :: Value.Value -> ExpectedValue
+valueToExpectedValue (Value.Value v) = P.fmap (0,) v
 
 data Opts = Opts
   { optsSourceWalletAddressPath :: FilePath
@@ -161,7 +168,7 @@ runTests config = hspec $ aroundAllWith (createResources config) $ do
               void $ output buyerAddr (assets <> "1758582 lovelace")
 
               payoutTotal <- fmap mconcat $ for swaps $ \s -> fmap mconcat . for (sSwapPayouts $ sadSwap s) $ \Payout {..} ->
-                let txValue = toTxValue pValue
+                let txValue = toTxValue $ expectedValueToValue pValue
                 in txValue <$ output (lookupWalletAddr pAddress (rWallets resources)) txValue
 
               void $ selectInputs payoutTotal buyerAddr
@@ -273,19 +280,20 @@ evalAccept config@Config {..} Resources {..} theSwap offer = do
 
     asset = sadValue theSwap
     offerValue = sadValue offer
-    sellerPayout = Payout sellerPkh offerValue
+    sellerPayout = Payout sellerPkh $ valueToExpectedValue offerValue
     payouts = [sellerPayout]
 
     evalConfig =
       EvalConfig { ecOutputDir = Nothing -- Just "temp/cbor"
-                                        , ecTestnet = cTestnetMagic, ecProtocolParams = cProtocolParams }
+                 , ecTestnet = cTestnetMagic, ecProtocolParams = cProtocolParams }
   eval evalConfig $ do
     void . forScriptInputs config [theSwap, offer] $ \(s, _) utxo -> do
       scriptInput utxo cPlutusScript s Accept
 
     void $ output buyerAddr (toTxValue asset <> "1758582 lovelace")
 
-    for_ payouts $ \Payout {..} -> output (lookupWalletAddr pAddress rWallets) . toTxValue $ pValue
+    for_ payouts $ \Payout {..} -> output (lookupWalletAddr pAddress rWallets) . toTxValue $
+      expectedValueToValue pValue
 
     (cInput, _) <- selectCollateralInput sellerAddr
     input . iUtxo $ cInput
@@ -301,7 +309,7 @@ evalAccepts :: Config -> Resources -> [SwapAndDatum] -> SelectWallet -> IO ()
 evalAccepts config@Config {..} Resources {..} swaps buyerW = do
   let
     buyerAddr = walletAddr . buyerW $ rWallets
-    mergePayouts = fmap (uncurry Payout) . Map.toList . foldr (Map.unionWith mappend) mempty . fmap
+    mergePayouts = fmap (uncurry Payout) . Map.toList . foldr (Map.unionWith unionExpectedValue) Map.empty . fmap
       (\Payout {..} -> Map.singleton pAddress pValue)
     evalConfig =
       EvalConfig { ecOutputDir = Nothing -- Just "temp/cbor"
@@ -315,7 +323,8 @@ evalAccepts config@Config {..} Resources {..} swaps buyerW = do
     void $ output buyerAddr (assets <> "1758582 lovelace")
 
     payoutTotal <- fmap mconcat . for payouts $ \Payout {..} ->
-      let txValue = toTxValue pValue in txValue <$ output (lookupWalletAddr pAddress rWallets) txValue
+      let txValue = toTxValue (expectedValueToValue pValue)
+      in txValue <$ output (lookupWalletAddr pAddress rWallets) txValue
 
     void $ selectInputs payoutTotal buyerAddr
 
@@ -332,7 +341,7 @@ evalAcceptsWithAlwaysSucceeds :: Config -> Resources -> [SwapAndDatum] -> Select
 evalAcceptsWithAlwaysSucceeds config@Config {..} Resources {..} swaps buyerW = do
   let
     buyerAddr = walletAddr . buyerW $ rWallets
-    mergePayouts = fmap (uncurry Payout) . Map.toList . foldr (Map.unionWith mappend) mempty . fmap
+    mergePayouts = fmap (uncurry Payout) . Map.toList . foldr (Map.unionWith unionExpectedValue) Map.empty . fmap
       (\Payout {..} -> Map.singleton pAddress pValue)
     evalConfig =
       EvalConfig { ecOutputDir = Nothing -- Just "temp/cbor"
@@ -354,7 +363,8 @@ evalAcceptsWithAlwaysSucceeds config@Config {..} Resources {..} swaps buyerW = d
     void $ output buyerAddr (assets <> "1758582 lovelace")
 
     payoutTotal <- fmap mconcat . for payouts $ \Payout {..} ->
-      let txValue = toTxValue pValue in txValue <$ output (lookupWalletAddr pAddress rWallets) txValue
+      let txValue = toTxValue (expectedValueToValue pValue)
+      in txValue <$ output (lookupWalletAddr pAddress rWallets) txValue
 
     void $ selectInputs payoutTotal buyerAddr
 
@@ -411,9 +421,9 @@ data SwapSpec = SwapSpec
 
 stdPayouts :: SelectWallet -> Wallets -> [Payout]
 stdPayouts seller wallets =
-  [ Payout (fromString . walletPkh . seller $ wallets) (lovelaceValueOf 8000000)
-  , Payout (fromString . walletPkh . marketplace $ wallets) (lovelaceValueOf 1000000)
-  , Payout (fromString . walletPkh . royalties $ wallets) (lovelaceValueOf 1000000)
+  [ Payout (fromString . walletPkh . seller $ wallets) (valueToExpectedValue $ lovelaceValueOf 8000000)
+  , Payout (fromString . walletPkh . marketplace $ wallets) (valueToExpectedValue $ lovelaceValueOf 1000000)
+  , Payout (fromString . walletPkh . royalties $ wallets) (valueToExpectedValue $ lovelaceValueOf 1000000)
   ]
 
 swapSpec :: SelectWallet -> SelectPolicy -> SwapSpec
@@ -482,7 +492,7 @@ createCounterOffer Config {..} runTest (rs@Resources { rWallets }, swaps) = do
     SwapAndDatum { sadValue } = head swaps
     Wallet {..} = buyer rWallets
     buyerPkh = fromString walletPkh
-    buyerPayout = Payout buyerPkh sadValue
+    buyerPayout = Payout buyerPkh $ valueToExpectedValue sadValue
     offerValue = Ada.lovelaceValueOf 1500000
     txOfferValue = toTxValue offerValue
     offerDatum = Swap buyerPkh [buyerPayout]

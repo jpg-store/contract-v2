@@ -85,6 +85,7 @@ executable integration-tests
     , jpg-store-bulk-purchase
     , managed
     , mtl
+    , plutus-core
     , plutus-ledger
     , plutus-ledger-api
     , plutus-tx
