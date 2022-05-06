@@ -15,6 +15,9 @@ flag defer-plugin-errors
 
 common lang
   default-language: Haskell2010
+  default-extensions:
+    LambdaCase
+    ViewPatterns
   ghc-options:
     -Wall -Wnoncanonical-monad-instances -Wincomplete-uni-patterns
     -Wincomplete-record-updates -Wredundant-constraints -Widentities
@@ -27,8 +30,10 @@ common lang
 
 library
   import:          lang
-  exposed-modules: Canonical.JpgStore.BulkPurchase
-                   Canonical.Shared
+  exposed-modules:
+    Canonical.JpgStore.BulkPurchase
+    Canonical.Shared
+
   build-depends:
     , aeson
     , base               >=4.9 && <5
@@ -63,7 +68,7 @@ executable integration-tests
   import:         lang
   hs-source-dirs: integration-tests
   main-is:        Main.hs
-  other-modules: AlwaysSucceed
+  other-modules:  AlwaysSucceed
   ghc-options:    -Wall -Werror -threaded -rtsopts -with-rtsopts=-T
   build-depends:
     , aeson
