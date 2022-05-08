@@ -38,9 +38,17 @@ import System.IO
 import System.IO.Temp
 import System.Process
 import Test.Hspec
+import qualified PlutusTx.Functor as P
+import qualified PlutusTx.AssocMap as M
 
 import Canonical.JpgStore.BulkPurchase
 import AlwaysSucceed
+
+expectedValueToValue :: ExpectedValue -> Value.Value
+expectedValueToValue e = Value.Value $ P.fmap (\(_, x) -> x) e
+
+valueToExpectedValue :: Value.Value -> ExpectedValue
+valueToExpectedValue (Value.Value v) = P.fmap (0,) v
 
 data Opts = Opts
   { optsSourceWalletAddressPath :: FilePath
@@ -123,17 +131,77 @@ policy4 :: SelectPolicy
 policy4 = (!! 3)
 
 runTests :: Config -> IO ()
-runTests config = hspec $ aroundAllWith (createResources config) $ do
+runTests config@Config{..} = hspec $ aroundAllWith (createResources config) $ do
   describe "single offer" $ do
-    aroundWith (createSwaps config [swapSpec seller1 policy1]) $ do
-      it "can be purchased" $ \(resources, swaps) -> evalAccepts config resources swaps buyer
+    it "can be for only the policy id" $ \Resources{..} -> do
+      let
+        thePolicy = head $ rPolicies
 
-      it "can be cancelled by owner" $ \(resources, swaps) -> evalCancelSwaps config resources swaps seller1
+        thePolicyId :: Value.CurrencySymbol
+        thePolicyId = fromString $ policyId thePolicy
 
-      context "buyer counter offers" $ do
-        aroundWith (createCounterOffer config) $ do
-          it "seller can accept offer"
-            $ \(resources, swaps, offer) -> evalAccept config resources (head swaps) offer
+        royaltyWallet = royalties rWallets
+        marketplaceWallet = marketplace rWallets
+        buyerWallet = buyer rWallets
+
+        payouts =
+          [ Payout (fromString $ walletPkh buyerWallet) (M.singleton thePolicyId (1, M.empty))
+          , Payout (fromString $ walletPkh marketplaceWallet) (valueToExpectedValue $ lovelaceValueOf 1000000)
+          , Payout (fromString $ walletPkh royaltyWallet) (valueToExpectedValue $ lovelaceValueOf 1000000)
+          ]
+        swapDatum = Swap (fromString . walletPkh . buyer $ rWallets) payouts
+        evalConfig = mempty
+          { ecTestnet = cTestnetMagic
+          , ecProtocolParams = cProtocolParams
+          }
+
+        buyerAddr = walletAddr buyerWallet
+
+      eval evalConfig $ do
+        outputWithHash cScriptAddr "5000000 lovelace" swapDatum
+        void $ selectInputs "7000000 lovelace " buyerAddr
+        changeAddress buyerAddr
+        void . balanceNonAdaAssets $ buyerAddr
+        sign $ walletSkeyPath buyerWallet
+
+      waitForNextBlock cTestnetMagic
+
+      let
+        sellerWallet = head $ sellers rWallets
+        sellerAddr = walletAddr sellerWallet
+
+      void $ evalMint config sellerWallet thePolicy "123456" 1
+      waitForNextBlock cTestnetMagic
+
+      let theAsset = show thePolicyId <> ".313233343536"
+
+      eval evalConfig $ do
+        void $ output (walletAddr royaltyWallet) "1000000 lovelace"
+        void $ output (walletAddr marketplaceWallet) "1000000 lovelace"
+        void $ output buyerAddr $ fromString $ "2000000 lovelace + 1 " <> theAsset
+
+        void $ selectInputs (fromString $ "2000000 lovelace + 1 " <> theAsset) sellerAddr
+
+        void $ selectCollateralInput sellerAddr
+        void $ balanceNonAdaAssets sellerAddr
+        start <- currentSlot
+        timerange start (start + 100)
+        changeAddress sellerAddr
+        sign $ walletSkeyPath sellerWallet
+
+      waitForNextBlock cTestnetMagic
+
+  aroundWith (createSwaps config [swapSpec seller1 policy1]) $ do
+    it "can be purchased" $ \(resources, swaps) -> evalAccepts config resources swaps buyer
+
+    it "can be cancelled by owner" $ \(resources, swaps) -> evalCancelSwaps config resources swaps seller1
+
+    context "buyer counter offers" $ do
+      aroundWith (createCounterOffer config) $ do
+        it "seller can accept offer"
+          $ \(resources, swaps, offer) -> evalAccept config resources (head swaps) offer
+
+
 
   describe "multiple offers" $ do
     context "from same seller" $ do
@@ -149,19 +217,19 @@ runTests config = hspec $ aroundAllWith (createResources config) $ do
               evalConfig =
                 EvalConfig
                   { ecOutputDir = Nothing
-                  , ecTestnet = cTestnetMagic config
-                  , ecProtocolParams = cProtocolParams config
+                  , ecTestnet = cTestnetMagic
+                  , ecProtocolParams = cProtocolParams
                   }
             eval evalConfig $ do
               assets <-
                 fmap (toTxValue . mconcat) . forScriptInputs config swaps $ \(s, v) utxo -> do
-                  scriptInput utxo (cPlutusScript config) s Accept
+                  scriptInput utxo cPlutusScript s Accept
                   pure v
 
               void $ output buyerAddr (assets <> "1758582 lovelace")
 
               payoutTotal <- fmap mconcat $ for swaps $ \s -> fmap mconcat . for (sSwapPayouts $ sadSwap s) $ \Payout {..} ->
-                let txValue = toTxValue pValue
+                let txValue = toTxValue $ expectedValueToValue pValue
                 in txValue <$ output (lookupWalletAddr pAddress (rWallets resources)) txValue
 
               void $ selectInputs payoutTotal buyerAddr
@@ -173,8 +241,7 @@ runTests config = hspec $ aroundAllWith (createResources config) $ do
               changeAddress buyerAddr
               sign . walletSkeyPath . buyer $ rWallets resources
 
-            waitForNextBlock . cTestnetMagic $ config
-
+            waitForNextBlock cTestnetMagic
 
     context "from multiple sellers" $ do
       context "that have no expiration" $ do
@@ -273,19 +340,20 @@ evalAccept config@Config {..} Resources {..} theSwap offer = do
 
     asset = sadValue theSwap
     offerValue = sadValue offer
-    sellerPayout = Payout sellerPkh offerValue
+    sellerPayout = Payout sellerPkh $ valueToExpectedValue offerValue
     payouts = [sellerPayout]
 
     evalConfig =
       EvalConfig { ecOutputDir = Nothing -- Just "temp/cbor"
-                                        , ecTestnet = cTestnetMagic, ecProtocolParams = cProtocolParams }
+                 , ecTestnet = cTestnetMagic, ecProtocolParams = cProtocolParams }
   eval evalConfig $ do
     void . forScriptInputs config [theSwap, offer] $ \(s, _) utxo -> do
       scriptInput utxo cPlutusScript s Accept
 
     void $ output buyerAddr (toTxValue asset <> "1758582 lovelace")
 
-    for_ payouts $ \Payout {..} -> output (lookupWalletAddr pAddress rWallets) . toTxValue $ pValue
+    for_ payouts $ \Payout {..} -> output (lookupWalletAddr pAddress rWallets) . toTxValue $
+      expectedValueToValue pValue
 
     (cInput, _) <- selectCollateralInput sellerAddr
     input . iUtxo $ cInput
@@ -301,7 +369,7 @@ evalAccepts :: Config -> Resources -> [SwapAndDatum] -> SelectWallet -> IO ()
 evalAccepts config@Config {..} Resources {..} swaps buyerW = do
   let
     buyerAddr = walletAddr . buyerW $ rWallets
-    mergePayouts = fmap (uncurry Payout) . Map.toList . foldr (Map.unionWith mappend) mempty . fmap
+    mergePayouts = fmap (uncurry Payout) . Map.toList . foldr (Map.unionWith unionExpectedValue) Map.empty . fmap
       (\Payout {..} -> Map.singleton pAddress pValue)
     evalConfig =
       EvalConfig { ecOutputDir = Nothing -- Just "temp/cbor"
@@ -315,7 +383,8 @@ evalAccepts config@Config {..} Resources {..} swaps buyerW = do
     void $ output buyerAddr (assets <> "1758582 lovelace")
 
     payoutTotal <- fmap mconcat . for payouts $ \Payout {..} ->
-      let txValue = toTxValue pValue in txValue <$ output (lookupWalletAddr pAddress rWallets) txValue
+      let txValue = toTxValue (expectedValueToValue pValue)
+      in txValue <$ output (lookupWalletAddr pAddress rWallets) txValue
 
     void $ selectInputs payoutTotal buyerAddr
 
@@ -332,7 +401,7 @@ evalAcceptsWithAlwaysSucceeds :: Config -> Resources -> [SwapAndDatum] -> Select
 evalAcceptsWithAlwaysSucceeds config@Config {..} Resources {..} swaps buyerW = do
   let
     buyerAddr = walletAddr . buyerW $ rWallets
-    mergePayouts = fmap (uncurry Payout) . Map.toList . foldr (Map.unionWith mappend) mempty . fmap
+    mergePayouts = fmap (uncurry Payout) . Map.toList . foldr (Map.unionWith unionExpectedValue) Map.empty . fmap
       (\Payout {..} -> Map.singleton pAddress pValue)
     evalConfig =
       EvalConfig { ecOutputDir = Nothing -- Just "temp/cbor"
@@ -354,7 +423,8 @@ evalAcceptsWithAlwaysSucceeds config@Config {..} Resources {..} swaps buyerW = d
     void $ output buyerAddr (assets <> "1758582 lovelace")
 
     payoutTotal <- fmap mconcat . for payouts $ \Payout {..} ->
-      let txValue = toTxValue pValue in txValue <$ output (lookupWalletAddr pAddress rWallets) txValue
+      let txValue = toTxValue (expectedValueToValue pValue)
+      in txValue <$ output (lookupWalletAddr pAddress rWallets) txValue
 
     void $ selectInputs payoutTotal buyerAddr
 
@@ -411,9 +481,9 @@ data SwapSpec = SwapSpec
 
 stdPayouts :: SelectWallet -> Wallets -> [Payout]
 stdPayouts seller wallets =
-  [ Payout (fromString . walletPkh . seller $ wallets) (lovelaceValueOf 8000000)
-  , Payout (fromString . walletPkh . marketplace $ wallets) (lovelaceValueOf 1000000)
-  , Payout (fromString . walletPkh . royalties $ wallets) (lovelaceValueOf 1000000)
+  [ Payout (fromString . walletPkh . seller $ wallets) (valueToExpectedValue $ lovelaceValueOf 8000000)
+  , Payout (fromString . walletPkh . marketplace $ wallets) (valueToExpectedValue $ lovelaceValueOf 1000000)
+  , Payout (fromString . walletPkh . royalties $ wallets) (valueToExpectedValue $ lovelaceValueOf 1000000)
   ]
 
 swapSpec :: SelectWallet -> SelectPolicy -> SwapSpec
@@ -457,6 +527,7 @@ createSwap config@Config {..} wallet@Wallet {..} policy payouts = do
 
   datumHash <- hashDatum . toCliJson $ swapDatum
 
+
   -- if there is an existing swap that is the same, reuse it
   -- existingScriptInput <- filter ((== Just datumHash) . utxoDatumHash) <$> queryUtxos walletAddr cTestnetMagic
 
@@ -482,7 +553,7 @@ createCounterOffer Config {..} runTest (rs@Resources { rWallets }, swaps) = do
     SwapAndDatum { sadValue } = head swaps
     Wallet {..} = buyer rWallets
     buyerPkh = fromString walletPkh
-    buyerPayout = Payout buyerPkh sadValue
+    buyerPayout = Payout buyerPkh $ valueToExpectedValue sadValue
     offerValue = Ada.lovelaceValueOf 1500000
     txOfferValue = toTxValue offerValue
     offerDatum = Swap buyerPkh [buyerPayout]
