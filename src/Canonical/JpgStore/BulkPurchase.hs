@@ -4,7 +4,6 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -14,12 +13,16 @@
 
 module Canonical.JpgStore.BulkPurchase
   ( ExpectedValue
+  , Natural(..)
   , Payout(..)
   , Redeemer(..)
   , Swap(..)
+  , SwapAddress(..)
+  , WholeNumber(..)
   , swap
   , writePlutusFile
   , unionExpectedValue
+  , satisfyExpectations
   ) where
 
 {- HLINT ignore module "Eta reduce" -}
@@ -32,7 +35,7 @@ import Codec.Serialise (serialise)
 import qualified Data.ByteString.Lazy as LB
 import qualified Data.ByteString.Short as SBS
 import Ledger
-  (Datum(..), DatumHash, PubKeyHash, TxOutRef, mkValidatorScript, ValidatorHash, validatorHash)
+  (Datum(..), DatumHash, PubKeyHash, TxOutRef(..), mkValidatorScript, ValidatorHash, validatorHash)
 import qualified Ledger.Typed.Scripts as Scripts
 import Plutus.V1.Ledger.Credential
 import Plutus.V1.Ledger.Value
@@ -41,7 +44,6 @@ import qualified PlutusTx.AssocMap as M
 import PlutusTx.AssocMap (Map)
 import PlutusTx.Prelude
 import Prelude (IO, print, putStrLn)
-import Plutus.V1.Ledger.Ada
 import System.FilePath
 import PlutusTx.These
 
@@ -83,7 +85,7 @@ instance UnsafeFromData Natural where
 
 data SwapAddress = SwapAddress
   { sAddressCredential :: Credential
-  , sAddressStakingCredential :: StakingCredential
+  , sAddressStakingCredential :: Maybe StakingCredential
   }
 
 instance Eq SwapAddress where
@@ -148,20 +150,6 @@ unionExpectedValue l r =
             These (ac, a) (bc, b) -> (ac + bc, fmap innerUnThese (M.union a b))
 
     in unThese <$> combined
-
-expectedLovelaces :: ExpectedValue -> Integer
-expectedLovelaces e = maybe 0 unWholeNumber $  do
-  tm <- snd <$> M.lookup adaSymbol e
-  M.lookup adaToken tm
-
-{-
-subtractLovelaces :: ExpectedValue -> Integer -> ExpectedValue
-subtractLovelaces ev loves = fromMaybe ev $ do
-  (c, tm) <- M.lookup adaSymbol ev
-  oldLovelaces <- M.lookup adaToken tm
-  let newTm = M.insert adaToken (oldLovelaces - loves) tm
-  pure $ M.insert adaSymbol (c, newTm) ev
--}
 -- For all currency symbols
 -- the value must have the currency symbol
 -- if it does then for all the tokens must be there with enough coins
@@ -270,6 +258,34 @@ mergePayouts Payout {..} =
 
 paidAtleastTo :: [SwapTxOut] -> SwapAddress -> ExpectedValue -> Bool
 paidAtleastTo outputs pkh val = satisfyExpectations val (valuePaidTo' outputs pkh)
+
+drop :: Integer -> [a] -> [a]
+drop n l@(_:xs) =
+    if n <= 0 then l
+    else drop (n-1) xs
+drop _ [] = []
+
+merge :: [SwapTxInInfo] -> [SwapTxInInfo] -> [SwapTxInInfo]
+merge as@(a@SwapTxInInfo { sTxInInfoOutRef = TxOutRef ax ay } :as') bs@(b@SwapTxInInfo { sTxInInfoOutRef = TxOutRef bx by }:bs') =
+  if ax < bx then
+    a:(merge as' bs)
+  else if ax > bx then
+    b:(merge as  bs')
+  else
+    if ay <= by
+      then a:(merge as' bs)
+      else b:(merge as  bs')
+merge [] bs = bs
+merge as [] = as
+
+mergeSort :: [SwapTxInInfo] -> [SwapTxInInfo]
+mergeSort xs =
+    let n = length xs
+    in if n > 1
+       then let n2 = n `divide` 2
+            in merge (mergeSort (take n2 xs)) (mergeSort (drop n2 xs))
+       else xs
+
 -------------------------------------------------------------------------------
 -- Boilerplate
 -------------------------------------------------------------------------------
@@ -329,8 +345,6 @@ swapValidator _ r SwapScriptContext{sScriptContextTxInfo = SwapTxInfo{..}, sScri
     scriptInputs :: [SwapTxInInfo]
     scriptInputs = filter (isScriptThisInput thisValidator) sTxInfoInputs
 
-    -- Defensive mapMaybe and fail
-    -- Die if Swaps is empty
     swaps :: [Swap]
     swaps = case map (\i -> convertDatum (lookupDatum i)) scriptInputs of
       [] -> TRACE_ERROR("The impossible happened", "6")
@@ -341,7 +355,7 @@ swapValidator _ r SwapScriptContext{sScriptContextTxInfo = SwapTxInfo{..}, sScri
 
   -- This allows the script to validate all inputs and outputs on only one script input.
   -- Ignores other script inputs being validated each time
-  in if sTxInInfoOutRef (head scriptInputs) /= thisOutRef then True else
+  in if sTxInInfoOutRef (head (mergeSort scriptInputs)) /= thisOutRef then True else
     case r of
       Cancel ->
         let

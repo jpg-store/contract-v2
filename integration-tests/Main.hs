@@ -1,5 +1,5 @@
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TupleSections #-}
@@ -39,16 +39,22 @@ import System.IO.Temp
 import System.Process
 import Test.Hspec
 import qualified PlutusTx.Functor as P
+import qualified PlutusTx.Prelude as P
 import qualified PlutusTx.AssocMap as M
 
 import Canonical.JpgStore.BulkPurchase
+import Plutus.V1.Ledger.Credential
 import AlwaysSucceed
 
+deriving instance Show SwapAddress
+deriving instance Eq SwapAddress
+deriving instance Ord SwapAddress
+
 expectedValueToValue :: ExpectedValue -> Value.Value
-expectedValueToValue e = Value.Value $ P.fmap (\(_, x) -> x) e
+expectedValueToValue e = Value.Value $ P.fmap (\(_, x) -> P.fmap unWholeNumber x) e
 
 valueToExpectedValue :: Value.Value -> ExpectedValue
-valueToExpectedValue (Value.Value v) = P.fmap (0,) v
+valueToExpectedValue (Value.Value v) = P.fmap (\x -> (P.zero, P.fmap WholeNumber x)) v
 
 data Opts = Opts
   { optsSourceWalletAddressPath :: FilePath
@@ -145,9 +151,9 @@ runTests config@Config{..} = hspec $ aroundAllWith (createResources config) $ do
         buyerWallet = buyer rWallets
 
         payouts =
-          [ Payout (fromString $ walletPkh buyerWallet) (M.singleton thePolicyId (1, M.empty))
-          , Payout (fromString $ walletPkh marketplaceWallet) (valueToExpectedValue $ lovelaceValueOf 1000000)
-          , Payout (fromString $ walletPkh royaltyWallet) (valueToExpectedValue $ lovelaceValueOf 1000000)
+          [ Payout (toSwapAddress $ fromString $ walletPkh buyerWallet) (M.singleton thePolicyId (Natural 1, M.empty))
+          , Payout (toSwapAddress $ fromString $ walletPkh marketplaceWallet) (valueToExpectedValue $ lovelaceValueOf 1000000)
+          , Payout (toSwapAddress $ fromString $ walletPkh royaltyWallet) (valueToExpectedValue $ lovelaceValueOf 1000000)
           ]
         swapDatum = Swap (fromString . walletPkh . buyer $ rWallets) payouts
         evalConfig = mempty
@@ -323,24 +329,27 @@ toTxValue =
 allWallets :: Wallets -> [Wallet]
 allWallets Wallets {..} = buyer : royalties : marketplace : sellers
 
-lookupWallet :: PubKeyHash -> Wallets -> Wallet
+lookupWallet :: SwapAddress -> Wallets -> Wallet
 lookupWallet pkh =
   fromMaybe (error $ "couldn't find wallet for pkh " <> show pkh) . find ((show pkh ==) . walletPkh) . allWallets
 
-lookupWalletAddr :: PubKeyHash -> Wallets -> String
+lookupWalletAddr :: SwapAddress -> Wallets -> String
 lookupWalletAddr pkh = walletAddr . lookupWallet pkh
+
+toSwapAddress :: PubKeyHash -> SwapAddress
+toSwapAddress pkh = SwapAddress (PubKeyCredential pkh) Nothing
 
 evalAccept :: Config -> Resources -> SwapAndDatum -> SwapAndDatum -> IO ()
 evalAccept config@Config {..} Resources {..} theSwap offer = do
   let
     sellerPkh = sOwner . sadSwap $ theSwap
-    sellerWallet = lookupWallet sellerPkh rWallets
+    sellerWallet = lookupWallet (toSwapAddress sellerPkh) rWallets
     sellerAddr = walletAddr sellerWallet
-    buyerAddr = lookupWalletAddr (sOwner . sadSwap $ offer) rWallets
+    buyerAddr = lookupWalletAddr (toSwapAddress . sOwner . sadSwap $ offer) rWallets
 
     asset = sadValue theSwap
     offerValue = sadValue offer
-    sellerPayout = Payout sellerPkh $ valueToExpectedValue offerValue
+    sellerPayout = Payout (toSwapAddress sellerPkh) $ valueToExpectedValue offerValue
     payouts = [sellerPayout]
 
     evalConfig =
@@ -481,9 +490,9 @@ data SwapSpec = SwapSpec
 
 stdPayouts :: SelectWallet -> Wallets -> [Payout]
 stdPayouts seller wallets =
-  [ Payout (fromString . walletPkh . seller $ wallets) (valueToExpectedValue $ lovelaceValueOf 8000000)
-  , Payout (fromString . walletPkh . marketplace $ wallets) (valueToExpectedValue $ lovelaceValueOf 1000000)
-  , Payout (fromString . walletPkh . royalties $ wallets) (valueToExpectedValue $ lovelaceValueOf 1000000)
+  [ Payout (toSwapAddress $ fromString . walletPkh . seller $ wallets) (valueToExpectedValue $ lovelaceValueOf 8000000)
+  , Payout (toSwapAddress $ fromString . walletPkh . marketplace $ wallets) (valueToExpectedValue $ lovelaceValueOf 1000000)
+  , Payout (toSwapAddress $ fromString . walletPkh . royalties $ wallets) (valueToExpectedValue $ lovelaceValueOf 1000000)
   ]
 
 swapSpec :: SelectWallet -> SelectPolicy -> SwapSpec
@@ -553,7 +562,7 @@ createCounterOffer Config {..} runTest (rs@Resources { rWallets }, swaps) = do
     SwapAndDatum { sadValue } = head swaps
     Wallet {..} = buyer rWallets
     buyerPkh = fromString walletPkh
-    buyerPayout = Payout buyerPkh $ valueToExpectedValue sadValue
+    buyerPayout = Payout (toSwapAddress buyerPkh) $ valueToExpectedValue sadValue
     offerValue = Ada.lovelaceValueOf 1500000
     txOfferValue = toTxValue offerValue
     offerDatum = Swap buyerPkh [buyerPayout]
