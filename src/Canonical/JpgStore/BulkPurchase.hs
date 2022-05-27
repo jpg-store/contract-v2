@@ -195,7 +195,7 @@ hasEnoughCoin tokenMap (tkn, WholeNumber count) mAccumMap  = mAccumMap >>= \accu
     _ -> Nothing
 
 valuePaidTo' :: [SwapTxOut] -> SwapAddress -> Value
-valuePaidTo' outs pkh = mconcat (addressOutputsAt pkh outs)
+valuePaidTo' outs addr = mconcat (addressOutputsAt addr outs)
 
 addressOutputsAt :: SwapAddress -> [SwapTxOut] -> [Value]
 addressOutputsAt addr outs =
@@ -264,7 +264,7 @@ mergePayouts Payout {..} =
   mapInsertWith unionExpectedValue pAddress pValue
 
 paidAtleastTo :: [SwapTxOut] -> SwapAddress -> ExpectedValue -> Bool
-paidAtleastTo outputs pkh val = satisfyExpectations val (valuePaidTo' outputs pkh)
+paidAtleastTo outputs addr val = satisfyExpectations val (valuePaidTo' outputs addr)
 
 drop :: Integer -> [a] -> [a]
 drop n l@(_:xs) =
@@ -322,7 +322,7 @@ PlutusTx.unstableMakeIsData ''Redeemer
 -- and the total is correct
 {-# HLINT ignore validateOutputConstraints "Use uncurry" #-}
 validateOutputConstraints :: [SwapTxOut] -> Map SwapAddress ExpectedValue -> Bool
-validateOutputConstraints outputs constraints = all (\(pkh, v) -> paidAtleastTo outputs pkh v) (M.toList constraints)
+validateOutputConstraints outputs constraints = all (\(addr, v) -> paidAtleastTo outputs addr v) (M.toList constraints)
 
 -- Every branch but user initiated cancel requires checking the input
 -- to ensure there is only one script input.
