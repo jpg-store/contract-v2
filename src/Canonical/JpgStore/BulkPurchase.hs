@@ -47,6 +47,40 @@ import PlutusTx.These
 
 #include "../DebugUtilities.h"
 
+newtype WholeNumber = WholeNumber { unWholeNumber :: Integer }
+  deriving(Eq, AdditiveSemigroup, Ord, ToData)
+
+instance FromData WholeNumber where
+  fromBuiltinData x = case fromBuiltinData x of
+    Nothing -> Nothing
+    Just i -> if i > 0
+      then Just (WholeNumber i)
+      else Nothing
+
+instance UnsafeFromData WholeNumber where
+  unsafeFromBuiltinData x =
+    let i = unsafeFromBuiltinData x
+    in if i > 0
+      then WholeNumber i
+      else TRACE_ERROR("WholeNumber is less than 1", "-2")
+
+newtype Natural = Natural Integer
+  deriving(Eq, AdditiveSemigroup, AdditiveMonoid, Ord, ToData)
+
+instance FromData Natural where
+  fromBuiltinData x = case fromBuiltinData x of
+    Nothing -> Nothing
+    Just i -> if i > (-1)
+      then Just (Natural i)
+      else Nothing
+
+instance UnsafeFromData Natural where
+  unsafeFromBuiltinData x =
+    let i = unsafeFromBuiltinData x
+    in if i > (-1)
+      then Natural i
+      else TRACE_ERROR("Natural is less than 0", "-3")
+
 data SwapAddress = SwapAddress
   { sAddressCredential :: Credential
   , sAddressStakingCredential :: BuiltinData
@@ -85,7 +119,7 @@ data SwapScriptContext = SwapScriptContext
   , sScriptContextPurpose :: SwapScriptPurpose
   }
 
-type ExpectedValue = M.Map CurrencySymbol (Integer, M.Map TokenName Integer)
+type ExpectedValue = M.Map CurrencySymbol (Natural, M.Map TokenName WholeNumber)
 
 {-# INLINABLE unionExpectedValue #-}
 unionExpectedValue :: ExpectedValue -> ExpectedValue -> ExpectedValue
@@ -93,30 +127,36 @@ unionExpectedValue l r =
     let
         combined = M.union l r
 
+        innerUnThese :: These WholeNumber WholeNumber -> WholeNumber
         innerUnThese k = case k of
             This a    -> a
             That b    -> b
-            These a b -> abs a + abs b
+            These a b -> a + b
 
+        unThese :: These
+                    (Natural, Map TokenName WholeNumber)
+                    (Natural, Map TokenName WholeNumber)
+                -> (Natural, Map TokenName WholeNumber)
         unThese k = case k of
             This a    -> a
             That b    -> b
-            These (ac, a) (bc, b) -> (abs ac + abs bc, fmap innerUnThese (M.union a b))
+            These (ac, a) (bc, b) -> (ac + bc, fmap innerUnThese (M.union a b))
 
     in unThese <$> combined
 
 expectedLovelaces :: ExpectedValue -> Integer
-expectedLovelaces e = fromMaybe 0 $  do
+expectedLovelaces e = maybe 0 unWholeNumber $  do
   tm <- snd <$> M.lookup adaSymbol e
   M.lookup adaToken tm
 
+{-
 subtractLovelaces :: ExpectedValue -> Integer -> ExpectedValue
 subtractLovelaces ev loves = fromMaybe ev $ do
   (c, tm) <- M.lookup adaSymbol ev
   oldLovelaces <- M.lookup adaToken tm
   let newTm = M.insert adaToken (oldLovelaces - loves) tm
   pure $ M.insert adaSymbol (c, newTm) ev
-
+-}
 -- For all currency symbols
 -- the value must have the currency symbol
 -- if it does then for all the tokens must be there with enough coins
@@ -126,9 +166,9 @@ satisfyExpectations ev v = all (satisfyExpectation v) $ M.toList ev
 
 satisfyExpectation
   :: Value
-  -> (CurrencySymbol, (Integer, M.Map TokenName Integer))
+  -> (CurrencySymbol, (Natural, M.Map TokenName WholeNumber))
   -> Bool
-satisfyExpectation theValue (cs, (count, expectedTokenMap))
+satisfyExpectation theValue (cs, (Natural count, expectedTokenMap))
   = case M.lookup cs $ getValue theValue of
       Just actualTokenMap -> case validateTokenMap actualTokenMap expectedTokenMap of
          Just leftOverMap ->
@@ -138,17 +178,17 @@ satisfyExpectation theValue (cs, (count, expectedTokenMap))
       Nothing -> TRACE("failed to find policy", "12", False)
 
 validateTokenMap :: M.Map TokenName Integer
-                 -> M.Map TokenName Integer
+                 -> M.Map TokenName WholeNumber
                  -> Maybe (M.Map TokenName Integer)
 validateTokenMap actual expected
   = foldr (hasEnoughCoin actual) (Just actual)
   $ M.toList expected
 
 hasEnoughCoin :: M.Map TokenName Integer
-              -> (TokenName, Integer)
+              -> (TokenName, WholeNumber)
               -> Maybe (M.Map TokenName Integer)
               -> Maybe (M.Map TokenName Integer)
-hasEnoughCoin tokenMap (tkn, count) mAccumMap  = mAccumMap >>= \accumMap ->
+hasEnoughCoin tokenMap (tkn, WholeNumber count) mAccumMap  = mAccumMap >>= \accumMap ->
   case M.lookup tkn tokenMap of
     Just actualCount
       | actualCount >= count -> Just $ M.delete tkn accumMap
@@ -259,7 +299,7 @@ validateOutputConstraints outputs constraints = all (\(pkh, v) -> paidAtleastTo 
 
 -- Every branch but user initiated cancel requires checking the input
 -- to ensure there is only one script input.
-swapValidator :: Swap -> Redeemer -> SwapScriptContext -> Bool
+swapValidator :: BuiltinData -> Redeemer -> SwapScriptContext -> Bool
 swapValidator _ r SwapScriptContext{sScriptContextTxInfo = SwapTxInfo{..}, sScriptContextPurpose = ASpending thisOutRef} =
   let
     singleSigner :: PubKeyHash
@@ -275,18 +315,22 @@ swapValidator _ r SwapScriptContext{sScriptContextTxInfo = SwapTxInfo{..}, sScri
       let theSwap = getDatum d
       in FROM_BUILT_IN_DATA("found datum that is not a swap", "2", theSwap, Swap)
 
-    lookupDatum :: DatumHash -> Datum
-    lookupDatum dh = go sTxInfoData where
+    lookupDatum :: SwapTxInInfo -> Datum
+    lookupDatum SwapTxInInfo { sTxInInfoResolved = SwapTxOut {sTxOutDatumHash = Just dh}} = go sTxInfoData where
       go = \case
         [] -> TRACE_ERROR("The impossible happened", "-1")
         (k, v):xs' -> if k == dh then v else go xs'
+    lookupDatum _ = TRACE_ERROR("The impossible happened", "7")
 
     scriptInputs :: [SwapTxInInfo]
     scriptInputs = filter (isScriptThisInput thisValidator) sTxInfoInputs
 
+    -- Defensive mapMaybe and fail
+    -- Die if Swaps is empty
     swaps :: [Swap]
-    swaps = mapMaybe
-      (\i -> fmap (\d -> convertDatum (lookupDatum d)) (sTxOutDatumHash (sTxInInfoResolved i))) scriptInputs
+    swaps = case map (\i -> convertDatum (lookupDatum i)) scriptInputs of
+      [] -> TRACE_ERROR("The impossible happened", "6")
+      xs -> xs
 
     outputsAreValid :: Map PubKeyHash ExpectedValue -> Bool
     outputsAreValid = validateOutputConstraints sTxInfoOutputs
