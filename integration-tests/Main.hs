@@ -330,8 +330,9 @@ allWallets :: Wallets -> [Wallet]
 allWallets Wallets {..} = buyer : royalties : marketplace : sellers
 
 lookupWallet :: SwapAddress -> Wallets -> Wallet
-lookupWallet pkh =
+lookupWallet SwapAddress { sAddressCredential = PubKeyCredential pkh } =
   fromMaybe (error $ "couldn't find wallet for pkh " <> show pkh) . find ((show pkh ==) . walletPkh) . allWallets
+lookupWallet _ = error "Bad address"
 
 lookupWalletAddr :: SwapAddress -> Wallets -> String
 lookupWalletAddr pkh = walletAddr . lookupWallet pkh
