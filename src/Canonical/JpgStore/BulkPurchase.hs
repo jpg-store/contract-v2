@@ -170,7 +170,7 @@ satisfyExpectation theValue (cs, (Natural count, expectedTokenMap))
   = case M.lookup cs $ getValue theValue of
       Just actualTokenMap -> case validateTokenMap actualTokenMap expectedTokenMap of
          Just leftOverMap ->
-           let validPolicyCount = length (M.keys (M.filter (>0) leftOverMap)) >= count
+           let validPolicyCount = sum (M.elems leftOverMap) >= count
            in TRACE_IF_FALSE("failed to validate policy count", "10", validPolicyCount)
          Nothing -> TRACE("failed to validate token map", "11", False)
       Nothing -> TRACE("failed to find policy", "12", False)
