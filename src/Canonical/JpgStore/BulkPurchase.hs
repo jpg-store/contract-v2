@@ -52,6 +52,11 @@ import PlutusTx.These
 newtype WholeNumber = WholeNumber { unWholeNumber :: Integer }
   deriving(Eq, AdditiveSemigroup, Ord, ToData)
 
+mkWholeNumber :: Integer -> WholeNumber
+mkWholeNumber i
+  | i < 1 = TRACE_ERROR("WholeNumber is less than 1", "-8")
+  | otherwise = WholeNumber i
+
 instance FromData WholeNumber where
   fromBuiltinData x = case fromBuiltinData x of
     Nothing -> Nothing
@@ -165,7 +170,7 @@ satisfyExpectation theValue (cs, (Natural count, expectedTokenMap))
   = case M.lookup cs $ getValue theValue of
       Just actualTokenMap -> case validateTokenMap actualTokenMap expectedTokenMap of
          Just leftOverMap ->
-           let validPolicyCount = length (M.keys leftOverMap) >= count
+           let validPolicyCount = length (M.keys (M.filter (>0) leftOverMap)) >= count
            in TRACE_IF_FALSE("failed to validate policy count", "10", validPolicyCount)
          Nothing -> TRACE("failed to validate token map", "11", False)
       Nothing -> TRACE("failed to find policy", "12", False)
@@ -184,7 +189,9 @@ hasEnoughCoin :: M.Map TokenName Integer
 hasEnoughCoin tokenMap (tkn, WholeNumber count) mAccumMap  = mAccumMap >>= \accumMap ->
   case M.lookup tkn tokenMap of
     Just actualCount
-      | actualCount >= count -> Just $ M.delete tkn accumMap
+      | actualCount == count -> Just $ M.delete tkn accumMap
+      | actualCount > count  -> Just $ M.insert tkn (actualCount - count) accumMap
+      | otherwise            -> Nothing
     _ -> Nothing
 
 valuePaidTo' :: [SwapTxOut] -> SwapAddress -> Value

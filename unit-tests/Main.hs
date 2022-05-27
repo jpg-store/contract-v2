@@ -36,7 +36,7 @@ spec = describe "satisfyExpectations" $ do
           ]
 
         theExpectations
-          = A.singleton "123456" (Natural 0, A.singleton "6789" $ WholeNumber 9999)
+          = A.singleton "123456" (Natural 0, A.singleton "6789" $ WholeNumber 10000)
     shouldSatisfy theValue (satisfyExpectations theExpectations)
 
   it "works for a single policy, with a specific token and any token" $ do
@@ -50,7 +50,7 @@ spec = describe "satisfyExpectations" $ do
           ]
 
         theExpectations
-          = A.singleton "123456" (Natural 1, A.singleton "6789" $ WholeNumber 9999)
+          = A.singleton "123456" (Natural 1, A.singleton "6789" $ WholeNumber 10000)
     shouldSatisfy theValue (satisfyExpectations theExpectations)
 
   it "works for a multiple policies, with a specific tokens and any token" $ do
@@ -64,10 +64,41 @@ spec = describe "satisfyExpectations" $ do
           ]
 
         theExpectations = A.fromList
+          [ ("123456", (Natural 1, A.singleton "1234" $ WholeNumber 10000))
+          , (adaSymbol, (Natural 0, A.singleton adaToken $ WholeNumber 100))
+          ]
+    shouldSatisfy theValue (satisfyExpectations theExpectations)
+
+  it "works for a multiple policies, with a specific tokens and any token if not all of the specific tokens match" $ do
+    let theValue = Value $ A.fromList
+          [ (adaSymbol, A.singleton adaToken 1000)
+          , ("123456", A.fromList
+                [ ("1234", 10000)
+                ]
+            )
+          ]
+
+        theExpectations = A.fromList
           [ ("123456", (Natural 1, A.singleton "1234" $ WholeNumber 9999))
           , (adaSymbol, (Natural 0, A.singleton adaToken $ WholeNumber 100))
           ]
     shouldSatisfy theValue (satisfyExpectations theExpectations)
+
+  it "does not work for a multiple policies, with a specific tokens and negative token amounts" $ do
+    let theValue = Value $ A.fromList
+          [ (adaSymbol, A.singleton adaToken 1000)
+          , ("123456", A.fromList
+                [ ("6789", (-10000))
+                , ("1234", 10000)
+                ]
+            )
+          ]
+
+        theExpectations = A.fromList
+          [ ("123456", (Natural 1, A.singleton "1234" $ WholeNumber 10000))
+          , (adaSymbol, (Natural 0, A.singleton adaToken $ WholeNumber 100))
+          ]
+    shouldSatisfy theValue (not . satisfyExpectations theExpectations)
 
   it "works for a multiple policies, with a specific tokens and any token, fails if one of the tokens is missing" $ do
     let theValue = Value $ A.fromList
