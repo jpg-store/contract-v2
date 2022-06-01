@@ -4,7 +4,6 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -14,12 +13,16 @@
 
 module Canonical.JpgStore.BulkPurchase
   ( ExpectedValue
+  , Natural(..)
   , Payout(..)
   , Redeemer(..)
   , Swap(..)
+  , SwapAddress(..)
+  , WholeNumber(..)
   , swap
   , writePlutusFile
   , unionExpectedValue
+  , satisfyExpectations
   ) where
 
 {- HLINT ignore module "Eta reduce" -}
@@ -32,7 +35,7 @@ import Codec.Serialise (serialise)
 import qualified Data.ByteString.Lazy as LB
 import qualified Data.ByteString.Short as SBS
 import Ledger
-  (Datum(..), DatumHash, PubKeyHash, TxOutRef, mkValidatorScript, ValidatorHash, validatorHash)
+  (Datum(..), DatumHash, PubKeyHash, TxOutRef(..), mkValidatorScript, ValidatorHash, validatorHash)
 import qualified Ledger.Typed.Scripts as Scripts
 import Plutus.V1.Ledger.Credential
 import Plutus.V1.Ledger.Value
@@ -41,16 +44,59 @@ import qualified PlutusTx.AssocMap as M
 import PlutusTx.AssocMap (Map)
 import PlutusTx.Prelude
 import Prelude (IO, print, putStrLn)
-import Plutus.V1.Ledger.Ada
 import System.FilePath
 import PlutusTx.These
 
 #include "../DebugUtilities.h"
 
+newtype WholeNumber = WholeNumber { unWholeNumber :: Integer }
+  deriving(Eq, AdditiveSemigroup, Ord, ToData)
+
+mkWholeNumber :: Integer -> WholeNumber
+mkWholeNumber i
+  | i < 1 = TRACE_ERROR("WholeNumber is less than 1", "-8")
+  | otherwise = WholeNumber i
+
+instance FromData WholeNumber where
+  fromBuiltinData x = case fromBuiltinData x of
+    Nothing -> Nothing
+    Just i -> if i > 0
+      then Just (WholeNumber i)
+      else Nothing
+
+instance UnsafeFromData WholeNumber where
+  unsafeFromBuiltinData x =
+    let i = unsafeFromBuiltinData x
+    in if i > 0
+      then WholeNumber i
+      else TRACE_ERROR("WholeNumber is less than 1", "-2")
+
+newtype Natural = Natural Integer
+  deriving(Eq, AdditiveSemigroup, AdditiveMonoid, Ord, ToData)
+
+instance FromData Natural where
+  fromBuiltinData x = case fromBuiltinData x of
+    Nothing -> Nothing
+    Just i -> if i > (-1)
+      then Just (Natural i)
+      else Nothing
+
+instance UnsafeFromData Natural where
+  unsafeFromBuiltinData x =
+    let i = unsafeFromBuiltinData x
+    in if i > (-1)
+      then Natural i
+      else TRACE_ERROR("Natural is less than 0", "-3")
+
 data SwapAddress = SwapAddress
   { sAddressCredential :: Credential
-  , sAddressStakingCredential :: BuiltinData
+  , sAddressStakingCredential :: Maybe StakingCredential
   }
+
+instance Eq SwapAddress where
+  x == y
+    =  sAddressCredential        x == sAddressCredential        y
+    && sAddressStakingCredential x == sAddressStakingCredential y
 
 data SwapTxOut = SwapTxOut
   { sTxOutAddress :: SwapAddress
@@ -85,7 +131,7 @@ data SwapScriptContext = SwapScriptContext
   , sScriptContextPurpose :: SwapScriptPurpose
   }
 
-type ExpectedValue = M.Map CurrencySymbol (Integer, M.Map TokenName Integer)
+type ExpectedValue = M.Map CurrencySymbol (Natural, M.Map TokenName WholeNumber)
 
 {-# INLINABLE unionExpectedValue #-}
 unionExpectedValue :: ExpectedValue -> ExpectedValue -> ExpectedValue
@@ -93,30 +139,22 @@ unionExpectedValue l r =
     let
         combined = M.union l r
 
+        innerUnThese :: These WholeNumber WholeNumber -> WholeNumber
         innerUnThese k = case k of
             This a    -> a
             That b    -> b
-            These a b -> abs a + abs b
+            These a b -> a + b
 
+        unThese :: These
+                    (Natural, Map TokenName WholeNumber)
+                    (Natural, Map TokenName WholeNumber)
+                -> (Natural, Map TokenName WholeNumber)
         unThese k = case k of
             This a    -> a
             That b    -> b
-            These (ac, a) (bc, b) -> (abs ac + abs bc, fmap innerUnThese (M.union a b))
+            These (ac, a) (bc, b) -> (ac + bc, fmap innerUnThese (M.union a b))
 
     in unThese <$> combined
-
-expectedLovelaces :: ExpectedValue -> Integer
-expectedLovelaces e = fromMaybe 0 $  do
-  tm <- snd <$> M.lookup adaSymbol e
-  M.lookup adaToken tm
-
-subtractLovelaces :: ExpectedValue -> Integer -> ExpectedValue
-subtractLovelaces ev loves = fromMaybe ev $ do
-  (c, tm) <- M.lookup adaSymbol ev
-  oldLovelaces <- M.lookup adaToken tm
-  let newTm = M.insert adaToken (oldLovelaces - loves) tm
-  pure $ M.insert adaSymbol (c, newTm) ev
-
 -- For all currency symbols
 -- the value must have the currency symbol
 -- if it does then for all the tokens must be there with enough coins
@@ -126,44 +164,45 @@ satisfyExpectations ev v = all (satisfyExpectation v) $ M.toList ev
 
 satisfyExpectation
   :: Value
-  -> (CurrencySymbol, (Integer, M.Map TokenName Integer))
+  -> (CurrencySymbol, (Natural, M.Map TokenName WholeNumber))
   -> Bool
-satisfyExpectation theValue (cs, (count, expectedTokenMap))
+satisfyExpectation theValue (cs, (Natural count, expectedTokenMap))
   = case M.lookup cs $ getValue theValue of
       Just actualTokenMap -> case validateTokenMap actualTokenMap expectedTokenMap of
          Just leftOverMap ->
-           let validPolicyCount = length (M.keys leftOverMap) >= count
+           let validPolicyCount = sum (M.elems leftOverMap) >= count
            in TRACE_IF_FALSE("failed to validate policy count", "10", validPolicyCount)
          Nothing -> TRACE("failed to validate token map", "11", False)
       Nothing -> TRACE("failed to find policy", "12", False)
 
 validateTokenMap :: M.Map TokenName Integer
-                 -> M.Map TokenName Integer
+                 -> M.Map TokenName WholeNumber
                  -> Maybe (M.Map TokenName Integer)
 validateTokenMap actual expected
   = foldr (hasEnoughCoin actual) (Just actual)
   $ M.toList expected
 
 hasEnoughCoin :: M.Map TokenName Integer
-              -> (TokenName, Integer)
+              -> (TokenName, WholeNumber)
               -> Maybe (M.Map TokenName Integer)
               -> Maybe (M.Map TokenName Integer)
-hasEnoughCoin tokenMap (tkn, count) mAccumMap  = mAccumMap >>= \accumMap ->
+hasEnoughCoin tokenMap (tkn, WholeNumber count) mAccumMap  = mAccumMap >>= \accumMap ->
   case M.lookup tkn tokenMap of
     Just actualCount
-      | actualCount >= count -> Just $ M.delete tkn accumMap
+      | actualCount == count -> Just $ M.delete tkn accumMap
+      | actualCount > count  -> Just $ M.insert tkn (actualCount - count) accumMap
+      | otherwise            -> Nothing
     _ -> Nothing
 
-valuePaidTo' :: [SwapTxOut] -> PubKeyHash -> Value
-valuePaidTo' outs pkh = mconcat (pubKeyOutputsAt' pkh outs)
+valuePaidTo' :: [SwapTxOut] -> SwapAddress -> Value
+valuePaidTo' outs addr = mconcat (addressOutputsAt addr outs)
 
-pubKeyOutputsAt' :: PubKeyHash -> [SwapTxOut] -> [Value]
-pubKeyOutputsAt' pk outs =
+addressOutputsAt :: SwapAddress -> [SwapTxOut] -> [Value]
+addressOutputsAt addr outs =
   let
-    flt SwapTxOut { sTxOutAddress = SwapAddress (PubKeyCredential pk') _, sTxOutValue }
-      | pk == pk' = Just sTxOutValue
+    flt SwapTxOut { sTxOutAddress, sTxOutValue }
+      | addr == sTxOutAddress = Just sTxOutValue
       | otherwise = Nothing
-    flt _ = Nothing
   in mapMaybe flt outs
 
 ownHash' :: [SwapTxInInfo] -> TxOutRef -> ValidatorHash
@@ -190,7 +229,7 @@ unstableMakeIsData ''SwapTxInInfo
 -------------------------------------------------------------------------------
 
 data Payout = Payout
-  { pAddress :: !PubKeyHash
+  { pAddress :: !SwapAddress
   , pValue :: !ExpectedValue
   }
 
@@ -220,12 +259,40 @@ mapInsertWith f k v xs = case M.lookup k xs of
   Nothing -> M.insert k v xs
   Just v' -> M.insert k (f v v') xs
 
-mergePayouts :: Payout -> Map PubKeyHash ExpectedValue -> Map PubKeyHash ExpectedValue
+mergePayouts :: Payout -> Map SwapAddress ExpectedValue -> Map SwapAddress ExpectedValue
 mergePayouts Payout {..} =
   mapInsertWith unionExpectedValue pAddress pValue
 
-paidAtleastTo :: [SwapTxOut] -> PubKeyHash -> ExpectedValue -> Bool
-paidAtleastTo outputs pkh val = satisfyExpectations val (valuePaidTo' outputs pkh)
+paidAtleastTo :: [SwapTxOut] -> SwapAddress -> ExpectedValue -> Bool
+paidAtleastTo outputs addr val = satisfyExpectations val (valuePaidTo' outputs addr)
+
+drop :: Integer -> [a] -> [a]
+drop n l@(_:xs) =
+    if n <= 0 then l
+    else drop (n-1) xs
+drop _ [] = []
+
+merge :: [SwapTxInInfo] -> [SwapTxInInfo] -> [SwapTxInInfo]
+merge as@(a@SwapTxInInfo { sTxInInfoOutRef = TxOutRef ax ay } :as') bs@(b@SwapTxInInfo { sTxInInfoOutRef = TxOutRef bx by }:bs') =
+  if ax < bx then
+    a:(merge as' bs)
+  else if ax > bx then
+    b:(merge as  bs')
+  else
+    if ay <= by
+      then a:(merge as' bs)
+      else b:(merge as  bs')
+merge [] bs = bs
+merge as [] = as
+
+mergeSort :: [SwapTxInInfo] -> [SwapTxInInfo]
+mergeSort xs =
+    let n = length xs
+    in if n > 1
+       then let n2 = n `divide` 2
+            in merge (mergeSort (take n2 xs)) (mergeSort (drop n2 xs))
+       else xs
+
 -------------------------------------------------------------------------------
 -- Boilerplate
 -------------------------------------------------------------------------------
@@ -254,12 +321,12 @@ PlutusTx.unstableMakeIsData ''Redeemer
 -- check that each user is paid
 -- and the total is correct
 {-# HLINT ignore validateOutputConstraints "Use uncurry" #-}
-validateOutputConstraints :: [SwapTxOut] -> Map PubKeyHash ExpectedValue -> Bool
-validateOutputConstraints outputs constraints = all (\(pkh, v) -> paidAtleastTo outputs pkh v) (M.toList constraints)
+validateOutputConstraints :: [SwapTxOut] -> Map SwapAddress ExpectedValue -> Bool
+validateOutputConstraints outputs constraints = all (\(addr, v) -> paidAtleastTo outputs addr v) (M.toList constraints)
 
 -- Every branch but user initiated cancel requires checking the input
 -- to ensure there is only one script input.
-swapValidator :: Swap -> Redeemer -> SwapScriptContext -> Bool
+swapValidator :: BuiltinData -> Redeemer -> SwapScriptContext -> Bool
 swapValidator _ r SwapScriptContext{sScriptContextTxInfo = SwapTxInfo{..}, sScriptContextPurpose = ASpending thisOutRef} =
   let
     singleSigner :: PubKeyHash
@@ -275,25 +342,27 @@ swapValidator _ r SwapScriptContext{sScriptContextTxInfo = SwapTxInfo{..}, sScri
       let theSwap = getDatum d
       in FROM_BUILT_IN_DATA("found datum that is not a swap", "2", theSwap, Swap)
 
-    lookupDatum :: DatumHash -> Datum
-    lookupDatum dh = go sTxInfoData where
+    lookupDatum :: SwapTxInInfo -> Datum
+    lookupDatum SwapTxInInfo { sTxInInfoResolved = SwapTxOut {sTxOutDatumHash = Just dh}} = go sTxInfoData where
       go = \case
         [] -> TRACE_ERROR("The impossible happened", "-1")
         (k, v):xs' -> if k == dh then v else go xs'
+    lookupDatum _ = TRACE_ERROR("The impossible happened", "7")
 
     scriptInputs :: [SwapTxInInfo]
     scriptInputs = filter (isScriptThisInput thisValidator) sTxInfoInputs
 
     swaps :: [Swap]
-    swaps = mapMaybe
-      (\i -> fmap (\d -> convertDatum (lookupDatum d)) (sTxOutDatumHash (sTxInInfoResolved i))) scriptInputs
+    swaps = case map (\i -> convertDatum (lookupDatum i)) scriptInputs of
+      [] -> TRACE_ERROR("The impossible happened", "6")
+      xs -> xs
 
-    outputsAreValid :: Map PubKeyHash ExpectedValue -> Bool
+    outputsAreValid :: Map SwapAddress ExpectedValue -> Bool
     outputsAreValid = validateOutputConstraints sTxInfoOutputs
 
   -- This allows the script to validate all inputs and outputs on only one script input.
   -- Ignores other script inputs being validated each time
-  in if sTxInInfoOutRef (head scriptInputs) /= thisOutRef then True else
+  in if sTxInInfoOutRef (head (mergeSort scriptInputs)) /= thisOutRef then True else
     case r of
       Cancel ->
         let
@@ -306,13 +375,13 @@ swapValidator _ r SwapScriptContext{sScriptContextTxInfo = SwapTxInfo{..}, sScri
         -- transaction. This allows the seller to accept an offer from a buyer that
         -- does not pay the seller as much as they requested
         let
-          accumPayouts :: Swap -> Map PubKeyHash ExpectedValue -> Map PubKeyHash ExpectedValue
+          accumPayouts :: Swap -> Map SwapAddress ExpectedValue -> Map SwapAddress ExpectedValue
           accumPayouts Swap{..} acc
             | sOwner == singleSigner = acc
             | otherwise = foldr mergePayouts acc sSwapPayouts
 
           -- assume all redeemers are accept, all the payouts should be paid (excpet those to the signer)
-          payouts :: Map PubKeyHash ExpectedValue
+          payouts :: Map SwapAddress ExpectedValue
           payouts = foldr accumPayouts M.empty swaps
         in TRACE_IF_FALSE("wrong output", "5", (outputsAreValid payouts))
 -------------------------------------------------------------------------------

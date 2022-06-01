@@ -121,5 +121,5 @@ source scripts/envars/testnet.envs
 To run the tests run
 
 ```bash
-cabal run integration-tests
+cabal test
 ```

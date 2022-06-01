@@ -18,6 +18,9 @@ common lang
   default-extensions:
     LambdaCase
     ViewPatterns
+    GeneralizedNewtypeDeriving
+    OverloadedStrings
+    StandaloneDeriving
   ghc-options:
     -Wall -Wnoncanonical-monad-instances -Wincomplete-uni-patterns
     -Wincomplete-record-updates -Wredundant-constraints -Widentities
@@ -64,8 +67,9 @@ executable create-smart-contract
     , plutus-ledger
     , plutus-ledger-api
 
-executable integration-tests
+test-suite integration-tests
   import:         lang
+  type: exitcode-stdio-1.0
   hs-source-dirs: integration-tests
   main-is:        Main.hs
   other-modules:  AlwaysSucceed
@@ -96,3 +100,15 @@ executable integration-tests
     , test-mint-scripts
     , text
     , time
+
+test-suite unit-tests
+  import:         lang
+  type: exitcode-stdio-1.0
+  hs-source-dirs:     unit-tests
+  main-is:            Main.hs
+  ghc-options:        -threaded -rtsopts "-with-rtsopts=-T"
+  build-depends: base
+               , jpg-store-bulk-purchase
+               , hspec
+               , plutus-tx
+               , plutus-ledger-api
