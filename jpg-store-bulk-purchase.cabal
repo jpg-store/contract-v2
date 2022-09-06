@@ -48,6 +48,7 @@ library
     , plutus-tx
     , plutus-tx-plugin
     , serialise
+    , plutonomy
 
   hs-source-dirs:  src
 
