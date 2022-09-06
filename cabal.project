@@ -325,7 +325,7 @@ source-repository-package
 source-repository-package
   type: git
   location: https://github.com/Canonical-LLC/cardano-transaction-builder
-  tag: 3290b248e65f3e0780ad0376c64e67f7cd8791d7
+  tag: 5dc29bbb36506be770df8e2481485a9f08a6798c
 
 source-repository-package
   type: git

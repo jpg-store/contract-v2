@@ -112,6 +112,7 @@ data Policy = Policy
 
 data Resources = Resources
   { rWallets :: Wallets
+  , rScriptUtxos :: [UTxO]
   , rPolicies :: [Policy]
   }
   deriving Show
@@ -165,7 +166,7 @@ runTests config@Config{..} = hspec $ aroundAllWith (createResources config) $ do
 
         buyerAddr = walletAddr buyerWallet
 
-      eval evalConfig $ do
+      void $ eval evalConfig $ do
         outputWithHash cScriptAddr "5000000 lovelace" swapDatum
         void $ selectInputs "7000000 lovelace " buyerAddr
         changeAddress buyerAddr
@@ -183,7 +184,7 @@ runTests config@Config{..} = hspec $ aroundAllWith (createResources config) $ do
 
       let theAsset = show thePolicyId <> ".313233343536"
 
-      eval evalConfig $ do
+      void $ eval evalConfig $ do
         void $ output (walletAddr royaltyWallet) "1000000 lovelace"
         void $ output (walletAddr marketplaceWallet) "1000000 lovelace"
         void $ output buyerAddr $ fromString $ "2000000 lovelace + 1 " <> theAsset
@@ -228,7 +229,7 @@ runTests config@Config{..} = hspec $ aroundAllWith (createResources config) $ do
                   , ecTestnet = cTestnetMagic
                   , ecProtocolParams = cProtocolParams
                   }
-            eval evalConfig $ do
+            void $ eval evalConfig $ do
               assets <-
                 fmap (toTxValue . mconcat) . forScriptInputs config swaps $ \(s, v) utxo -> do
                   scriptInput utxo cPlutusScript s Accept
@@ -356,7 +357,7 @@ createScriptReference Config {..} Resources {..} = do
       EvalConfig { ecOutputDir = Nothing -- Just "temp/cbor"
                  , ecTestnet = cTestnetMagic, ecProtocolParams = cProtocolParams }
 
-  eval evalConfig $ do
+  void $ eval evalConfig $ do
     void $ outputWithScriptReference sellerAddr "50000000 lovelace" cPlutusScript
 
     _ <- selectCollateralInput sellerAddr
@@ -383,7 +384,7 @@ evalAccept config@Config {..} Resources {..} theSwap offer = do
     evalConfig =
       EvalConfig { ecOutputDir = Nothing -- Just "temp/cbor"
                  , ecTestnet = cTestnetMagic, ecProtocolParams = cProtocolParams }
-  eval evalConfig $ do
+  void $ eval evalConfig $ do
     void . forScriptInputs config [theSwap, offer] $ \(s, _) utxo -> do
       scriptInput utxo cPlutusScript s Accept
 
@@ -411,7 +412,7 @@ evalAccepts config@Config {..} Resources {..} swaps buyerW = do
     evalConfig =
       EvalConfig { ecOutputDir = Nothing -- Just "temp/cbor"
                                         , ecTestnet = cTestnetMagic, ecProtocolParams = cProtocolParams }
-  eval evalConfig $ do
+  void $ eval evalConfig $ do
     (payouts, assets) <-
       fmap (bimap (mergePayouts . mconcat) (toTxValue . mconcat) . unzip) . forScriptInputs config swaps $ \(s, v) utxo -> do
         scriptInput utxo cPlutusScript s Accept
@@ -448,7 +449,7 @@ evalAcceptsWithAlwaysSucceeds config@Config {..} Resources {..} swaps buyerW = d
   AlwaysSucceedDatumAndHash {..} <- lockAlwaysSucceed config $ buyer rWallets
   waitForNextBlock cTestnetMagic
 
-  eval evalConfig $ do
+  void $ eval evalConfig $ do
     lockUtxo <- liftIO . maybe (throwIO $ userError "firstScriptInput: no utxos") pure . listToMaybe =<<
       findScriptInputs cAlwaysSucceedAddr (UTxO_DatumHash asdahDatumHash)
     scriptInput lockUtxo cAlwaysSucceedScript asdahDatum (1 :: Integer)
@@ -480,7 +481,7 @@ evalCancelSwaps config@Config {..} Resources {..} swaps canceller = do
     Wallet {..} = canceller rWallets
     evalConfig = mempty { ecTestnet = cTestnetMagic, ecProtocolParams = cProtocolParams }
 
-  eval evalConfig $ do
+  void $ eval evalConfig $ do
     void $ forScriptInputs config swaps $ \(s, _) utxo -> scriptInput utxo cPlutusScript s Cancel
     (cin, _) <- selectCollateralInput walletAddr
     input . iUtxo $ cin
@@ -543,7 +544,7 @@ lockAlwaysSucceed Config {..} Wallet {..} = do
 
   datumHash <- hashDatum $ toCliJson datum
 
-  eval evalConfig $ do
+  void $ eval evalConfig $ do
     outputWithHash cAlwaysSucceedAddr "1500000 lovelace" datum
     void $ selectInputs "7000000 lovelace" walletAddr
     changeAddress walletAddr
@@ -573,7 +574,7 @@ createSwap config@Config {..} wallet@Wallet {..} policy payouts = do
   txValue <- evalMint config wallet policy "123456" 1
   waitForNextBlock cTestnetMagic
 
-  eval evalConfig $ do
+  void $ eval evalConfig $ do
     outputWithHash cScriptAddr ("5000000 lovelace" <> txValue) swapDatum
     void $ selectInputs "7000000 lovelace" walletAddr
     changeAddress walletAddr
@@ -603,7 +604,7 @@ createCounterOffer Config {..} runTest (rs@Resources { rWallets }, swaps) = do
 
   datumHash <- hashDatum . toCliJson $ offerDatum
 
-  eval evalConfig $ do
+  void $ eval evalConfig $ do
     outputWithHash cScriptAddr txOfferValue offerDatum
     void $ selectInputs txOfferValue walletAddr
     changeAddress walletAddr
@@ -627,7 +628,7 @@ evalMint Config { cTestnetMagic, cProtocolParams } Wallet { walletAddr, walletSk
   let
     txValue = TxBuilder.Value . Map.singleton (policyId policy) . Map.singleton (encodedTokenName token) $ n
     evalConfig = mempty { ecTestnet = cTestnetMagic, ecProtocolParams = cProtocolParams }
-  eval evalConfig $ do
+  void $ eval evalConfig $ do
     mint txValue (policyFile policy) ([] @Int)
 
     void $ output walletAddr ("1758582 lovelace" <> txValue)
@@ -643,7 +644,9 @@ evalMint Config { cTestnetMagic, cProtocolParams } Wallet { walletAddr, walletSk
 
 createResources :: Config -> ActionWith Resources -> ActionWith ()
 createResources config runTest _ =
-  withWallets config $ \wallets -> withPolicies $ \policies -> runTest . Resources wallets $ policies
+  withWallets config $ \(wallets, utxos) -> withPolicies $ \policies -> do
+      let resources = Resources wallets utxos $ policies
+      runTest resources
 
 withProtocolParams :: Maybe Integer -> (FilePath -> IO a) -> IO a
 withProtocolParams testnetMagic runTest = withSystemTempFile "protocol-params.json" $ \fp fh -> do
@@ -683,7 +686,7 @@ withPolicy n f = withSystemTempFile ("policy-" <> show n <> ".plutus") $ \fp fh 
   policyId <- trim <$> readProcess "cardano-cli" ["transaction", "policyid", "--script-file", fp] mempty
   f $ Policy policyId fp
 
-withWallets :: Config -> (Wallets -> IO c) -> IO c
+withWallets :: Config -> ((Wallets, [UTxO]) -> IO c) -> IO c
 withWallets config@Config {..} runTest =
   let
     createWallet' = createWallet config
@@ -701,10 +704,11 @@ withWallets config@Config {..} runTest =
       print newAddrs
 
       unless (null newAddrs) $ do
-        eval evalConfig $ do
+        void $ eval evalConfig $ do
           values <- traverse (\addr -> fmap oValue . output addr $ "100000000 lovelace") newAddrs
 
           let srcAddr = cSourceWalletAddressPath
+
           void $ selectInputs (mconcat values) srcAddr
 
           changeAddress srcAddr
@@ -714,7 +718,25 @@ withWallets config@Config {..} runTest =
 
         waitForNextBlock cTestnetMagic
 
-      pure wallets
+      txid <- eval evalConfig $ do
+        let srcAddr = cSourceWalletAddressPath
+        scriptReferenceValues <- replicateM 4 $ outputWithScriptReference srcAddr "25000000 lovelace" cPlutusScript
+
+        void $ selectInputs (mconcat $ map oValue scriptReferenceValues) srcAddr
+
+        changeAddress srcAddr
+        void $ balanceNonAdaAssets srcAddr
+
+        sign cSourceWalletSkeyPath
+
+      let scriptReferenceUtxos = flip map [0..3] $ \utxoId -> UTxO
+            { utxoIndex  = utxoId
+            , utxoTx     = txid
+            , utxoValue  = mempty
+            , utxoDatum  = UTxO_NoDatum
+            }
+
+      pure (wallets, scriptReferenceUtxos)
     )
     (\_ -> pure ())
     runTest
