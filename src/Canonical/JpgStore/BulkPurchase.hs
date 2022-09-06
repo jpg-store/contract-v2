@@ -15,7 +15,7 @@ module Canonical.JpgStore.BulkPurchase
   ( ExpectedValue
   , Natural(..)
   , Payout(..)
-  , Redeemer(..)
+  , Action(..)
   , Swap(..)
   , SwapAddress(..)
   , WholeNumber(..)
@@ -30,13 +30,14 @@ module Canonical.JpgStore.BulkPurchase
 
 import Canonical.Shared
 import qualified Cardano.Api as Api
-import Cardano.Api.Shelley (PlutusScript(..), PlutusScriptV1)
+import Cardano.Api.Shelley (PlutusScript(..), PlutusScriptV2)
 import Codec.Serialise (serialise)
 import qualified Data.ByteString.Lazy as LB
 import qualified Data.ByteString.Short as SBS
-import Ledger
-  (Datum(..), DatumHash, PubKeyHash, TxOutRef(..), mkValidatorScript, ValidatorHash, validatorHash)
-import qualified Ledger.Typed.Scripts as Scripts
+import           Plutus.V1.Ledger.Crypto
+import           Plutus.V2.Ledger.Contexts
+import           Plutus.V1.Ledger.Scripts
+import           Plutus.V2.Ledger.Tx
 import Plutus.V1.Ledger.Credential
 import Plutus.V1.Ledger.Value
 import PlutusTx
@@ -101,7 +102,8 @@ instance Eq SwapAddress where
 data SwapTxOut = SwapTxOut
   { sTxOutAddress :: SwapAddress
   , sTxOutValue :: Value
-  , sTxOutDatumHash :: Maybe DatumHash
+  , sTxOutDatum           :: OutputDatum
+  , sTxOutReferenceScript :: BuiltinData
   }
 
 data SwapTxInInfo = SwapTxInInfo
@@ -111,6 +113,7 @@ data SwapTxInInfo = SwapTxInInfo
 
 data SwapTxInfo = SwapTxInfo
   { sTxInfoInputs :: [SwapTxInInfo]
+  , sTxInfoReferenceInputs    :: BuiltinData
   , sTxInfoOutputs :: [SwapTxOut]
   , sTxInfoFee :: BuiltinData
   , sTxInfoMint :: BuiltinData
@@ -118,7 +121,8 @@ data SwapTxInfo = SwapTxInfo
   , sTxInfoWdrl :: BuiltinData
   , sTxInfoValidRange :: BuiltinData
   , sTxInfoSignatories :: [PubKeyHash]
-  , sTxInfoData :: [(DatumHash, Datum)]
+  , sTxInfoRedeemers          :: BuiltinData
+  , sTxInfoData :: Map DatumHash Datum
   , sTxInfoId :: BuiltinData
   }
 
@@ -229,18 +233,18 @@ unstableMakeIsData ''SwapTxInInfo
 -------------------------------------------------------------------------------
 
 data Payout = Payout
-  { pAddress :: !SwapAddress
-  , pValue :: !ExpectedValue
+  { pAddress :: SwapAddress
+  , pValue :: ExpectedValue
   }
 
 data Swap = Swap
-  { sOwner :: !PubKeyHash
+  { sOwner :: PubKeyHash
   -- ^ Used for the signer check on Cancel
-  , sSwapPayouts :: ![Payout]
+  , sSwapPayouts :: [Payout]
   -- ^ Divvy up the payout to different address for Swap
   }
 
-data Redeemer
+data Action
   = Cancel
   | Accept
 
@@ -304,7 +308,7 @@ instance Eq Swap where
     =  sOwner       x == sOwner       y
     && sSwapPayouts x == sSwapPayouts y
 
-instance Eq Redeemer where
+instance Eq Action where
   x == y = case (x, y) of
     (Cancel, Cancel) -> True
     (Cancel, _) -> False
@@ -313,7 +317,7 @@ instance Eq Redeemer where
 
 PlutusTx.unstableMakeIsData ''Payout
 PlutusTx.unstableMakeIsData ''Swap
-PlutusTx.unstableMakeIsData ''Redeemer
+PlutusTx.unstableMakeIsData ''Action
 
 -------------------------------------------------------------------------------
 -- Validation
@@ -326,7 +330,7 @@ validateOutputConstraints outputs constraints = all (\(addr, v) -> paidAtleastTo
 
 -- Every branch but user initiated cancel requires checking the input
 -- to ensure there is only one script input.
-swapValidator :: BuiltinData -> Redeemer -> SwapScriptContext -> Bool
+swapValidator :: BuiltinData -> Action -> SwapScriptContext -> Bool
 swapValidator _ r SwapScriptContext{sScriptContextTxInfo = SwapTxInfo{..}, sScriptContextPurpose = ASpending thisOutRef} =
   let
     singleSigner :: PubKeyHash
@@ -337,23 +341,22 @@ swapValidator _ r SwapScriptContext{sScriptContextTxInfo = SwapTxInfo{..}, sScri
     thisValidator :: ValidatorHash
     thisValidator = ownHash' sTxInfoInputs thisOutRef
 
-    convertDatum :: Datum -> Swap
-    convertDatum d =
-      let theSwap = getDatum d
-      in FROM_BUILT_IN_DATA("found datum that is not a swap", "2", theSwap, Swap)
-
-    lookupDatum :: SwapTxInInfo -> Datum
-    lookupDatum SwapTxInInfo { sTxInInfoResolved = SwapTxOut {sTxOutDatumHash = Just dh}} = go sTxInfoData where
-      go = \case
-        [] -> TRACE_ERROR("The impossible happened", "-1")
-        (k, v):xs' -> if k == dh then v else go xs'
-    lookupDatum _ = TRACE_ERROR("The impossible happened", "7")
+    lookupDatum :: SwapTxInInfo -> Swap
+    lookupDatum SwapTxInInfo { sTxInInfoResolved = SwapTxOut {sTxOutDatum = theOutDatum}} =
+      let Datum d = case theOutDatum of
+            OutputDatum a -> a
+            OutputDatumHash dh -> go (M.toList sTxInfoData) where
+              go = \case
+                [] -> TRACE_ERROR("The impossible happened", "-1")
+                (k, v):xs' -> if k == dh then v else go xs'
+            NoOutputDatum -> TRACE_ERROR("The impossible happened", "7")
+      in FROM_BUILT_IN_DATA("lookupDatum datum conversion failed", "2", d, Swap)
 
     scriptInputs :: [SwapTxInInfo]
     scriptInputs = filter (isScriptThisInput thisValidator) sTxInfoInputs
 
     swaps :: [Swap]
-    swaps = case map (\i -> convertDatum (lookupDatum i)) scriptInputs of
+    swaps = case map (\i -> lookupDatum i) scriptInputs of
       [] -> TRACE_ERROR("The impossible happened", "6")
       xs -> xs
 
@@ -391,10 +394,10 @@ swapValidator _ r SwapScriptContext{sScriptContextTxInfo = SwapTxInfo{..}, sScri
 swapWrapped :: BuiltinData -> BuiltinData -> BuiltinData -> ()
 swapWrapped = wrap swapValidator
 
-validator :: Scripts.Validator
+validator :: Validator
 validator = mkValidatorScript $$(PlutusTx.compile [|| swapWrapped ||])
 
-swap :: PlutusScript PlutusScriptV1
+swap :: PlutusScript PlutusScriptV2
 swap = PlutusScriptSerialised . SBS.toShort . LB.toStrict . serialise $ validator
 
 swapHash :: ValidatorHash

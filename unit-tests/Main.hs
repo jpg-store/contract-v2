@@ -2,7 +2,6 @@ import Test.Hspec
 import Prelude
 import Canonical.JpgStore.BulkPurchase
 import qualified PlutusTx.AssocMap as A
-import Plutus.V1.Ledger.Ada
 import Plutus.V1.Ledger.Value
 
 main :: IO ()
