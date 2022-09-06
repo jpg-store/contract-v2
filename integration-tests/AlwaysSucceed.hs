@@ -14,12 +14,11 @@
 module AlwaysSucceed where
 import Canonical.Shared
 import qualified Cardano.Api as Api
-import Cardano.Api.Shelley (PlutusScript(..), PlutusScriptV1)
+import Cardano.Api.Shelley (PlutusScript(..), PlutusScriptV2)
 import Codec.Serialise (serialise)
 import qualified Data.ByteString.Lazy as LB
 import qualified Data.ByteString.Short as SBS
-import Ledger
-import qualified Ledger.Typed.Scripts as Scripts
+import           Plutus.V1.Ledger.Scripts
 import PlutusTx
 import PlutusTx.Prelude
 import Prelude (IO, print, putStrLn)
@@ -32,10 +31,10 @@ succeedValidator _ _ _ = True
 succeedWrapped :: BuiltinData -> BuiltinData -> BuiltinData -> ()
 succeedWrapped = wrap succeedValidator
 
-validator :: Scripts.Validator
+validator :: Validator
 validator = mkValidatorScript $$(PlutusTx.compile [|| succeedWrapped ||])
 
-succeed :: PlutusScript PlutusScriptV1
+succeed :: PlutusScript PlutusScriptV2
 succeed = PlutusScriptSerialised . SBS.toShort . LB.toStrict . serialise $ validator
 
 succeedHash :: ValidatorHash

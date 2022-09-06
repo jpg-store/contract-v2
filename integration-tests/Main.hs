@@ -27,9 +27,7 @@ import Data.String
 import qualified Data.Text as Text
 import Data.Traversable
 import Env
-import Ledger (PubKeyHash)
-import Plutus.V1.Ledger.Ada
-import qualified Plutus.V1.Ledger.Ada as Ada
+import           Plutus.V1.Ledger.Crypto
 import qualified Plutus.V1.Ledger.Value as Value
 import System.Directory
 import System.Exit
@@ -55,6 +53,9 @@ expectedValueToValue e = Value.Value $ P.fmap (\(_, x) -> P.fmap unWholeNumber x
 
 valueToExpectedValue :: Value.Value -> ExpectedValue
 valueToExpectedValue (Value.Value v) = P.fmap (\x -> (P.zero, P.fmap WholeNumber x)) v
+
+lovelaceValueOf :: Integer -> Value.Value
+lovelaceValueOf = Value.singleton "" ""
 
 data Opts = Opts
   { optsSourceWalletAddressPath :: FilePath
@@ -123,6 +124,7 @@ seller1 = (!! 0) . sellers
 
 seller2 :: SelectWallet
 seller2 = (!! 1) . sellers
+
 
 policy1 :: SelectPolicy
 policy1 = (!! 0)
@@ -261,6 +263,10 @@ runTests config@Config{..} = hspec $ aroundAllWith (createResources config) $ do
           it "Can't be purchased if another script is an input" $ \(resources, swaps) -> do
             evalAcceptsWithAlwaysSucceeds config resources swaps buyer `shouldThrow` isEvalException
 
+        aroundWith (createSwaps config [swapSpec seller1 policy1, swapSpec seller2 policy3, swapSpec seller2 policy4]) $ do
+          it "can be purchased in bulk upto 3" $ \(resources, swaps) -> do
+            evalAccepts config resources swaps buyer
+
 main :: IO ()
 main = do
   opts <-
@@ -339,6 +345,27 @@ lookupWalletAddr pkh = walletAddr . lookupWallet pkh
 
 toSwapAddress :: PubKeyHash -> SwapAddress
 toSwapAddress pkh = SwapAddress (PubKeyCredential pkh) Nothing
+
+createScriptReference :: Config -> Resources -> IO ()
+createScriptReference Config {..} Resources {..} = do
+  let
+    sellerWallet = seller1 rWallets
+    sellerAddr = walletAddr sellerWallet
+
+    evalConfig =
+      EvalConfig { ecOutputDir = Nothing -- Just "temp/cbor"
+                 , ecTestnet = cTestnetMagic, ecProtocolParams = cProtocolParams }
+
+  eval evalConfig $ do
+    void $ outputWithScriptReference sellerAddr "50000000 lovelace" cPlutusScript
+
+    _ <- selectCollateralInput sellerAddr
+    void $ selectAllInputsAndSelfBalance sellerAddr
+    changeAddress sellerAddr
+    sign . walletSkeyPath $ sellerWallet
+
+  waitForNextBlock cTestnetMagic
+
 
 evalAccept :: Config -> Resources -> SwapAndDatum -> SwapAndDatum -> IO ()
 evalAccept config@Config {..} Resources {..} theSwap offer = do
@@ -423,7 +450,7 @@ evalAcceptsWithAlwaysSucceeds config@Config {..} Resources {..} swaps buyerW = d
 
   eval evalConfig $ do
     lockUtxo <- liftIO . maybe (throwIO $ userError "firstScriptInput: no utxos") pure . listToMaybe =<<
-      findScriptInputs cAlwaysSucceedAddr asdahDatumHash
+      findScriptInputs cAlwaysSucceedAddr (UTxO_DatumHash asdahDatumHash)
     scriptInput lockUtxo cAlwaysSucceedScript asdahDatum (1 :: Integer)
     (payouts, assets) <-
       fmap (bimap (mergePayouts . mconcat) (toTxValue . mconcat) . unzip) . forScriptInputs config swaps $ \(s, v) utxo -> do
@@ -471,7 +498,7 @@ forScriptInputs Config {..} swaps f = do
     go acc = \case
       [] -> pure acc
       SwapAndDatum {..}:xs -> do
-        utxos <- findScriptInputs cScriptAddr sadDatumHash
+        utxos <- findScriptInputs cScriptAddr (UTxO_DatumHash sadDatumHash)
         -- we only take the first one in case there are multiple with the same datum from previous runs
         case filter (not . flip elem (map snd acc)) utxos of
           [] ->
@@ -564,7 +591,7 @@ createCounterOffer Config {..} runTest (rs@Resources { rWallets }, swaps) = do
     Wallet {..} = buyer rWallets
     buyerPkh = fromString walletPkh
     buyerPayout = Payout (toSwapAddress buyerPkh) $ valueToExpectedValue sadValue
-    offerValue = Ada.lovelaceValueOf 1500000
+    offerValue = lovelaceValueOf 1500000
     txOfferValue = toTxValue offerValue
     offerDatum = Swap buyerPkh [buyerPayout]
 
@@ -671,11 +698,13 @@ withWallets config@Config {..} runTest =
         <*> createWallet' "marketplace"
         <*> createWallet' "royalties"
 
+      print newAddrs
+
       unless (null newAddrs) $ do
         eval evalConfig $ do
           values <- traverse (\addr -> fmap oValue . output addr $ "100000000 lovelace") newAddrs
 
-          srcAddr <- liftIO . fmap trim . readFile $ cSourceWalletAddressPath
+          let srcAddr = cSourceWalletAddressPath
           void $ selectInputs (mconcat values) srcAddr
 
           changeAddress srcAddr
