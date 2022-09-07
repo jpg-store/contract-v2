@@ -275,7 +275,7 @@ runTests config@Config{..} = hspec $ aroundAllWith (createResources config) $ do
           -- , swapSpec seller2 policy3
           -- , swapSpec seller2 policy4
           ]) $ do
-          it "can be purchased in bulk upto 6" $ \(resources, swaps) -> do
+          it "can be purchased in bulk upto 5" $ \(resources, swaps) -> do
             evalAccepts config resources swaps buyer
 
 main :: IO ()
@@ -427,7 +427,7 @@ evalAccepts config@Config {..} Resources {..} swaps buyerW = do
     let swapsAndReferenceUtxos = zip swapUtxos rScriptUtxos
     (payouts, assets) <-
       fmap (bimap (mergePayouts . mconcat) (toTxValue . mconcat) . unzip) . forM swapsAndReferenceUtxos $ \((s, v, inputUtxo), referenceUtxo) -> do
-        scriptReferenceV2Input inputUtxo referenceUtxo s Accept
+        scriptReferenceV2Input inputUtxo referenceUtxo s Accept Nothing
         pure (sSwapPayouts s, v)
 
     void $ output buyerAddr (assets <> "3000000 lovelace")
@@ -440,6 +440,7 @@ evalAccepts config@Config {..} Resources {..} swaps buyerW = do
 
     void $ selectCollateralInput buyerAddr
     void $ balanceNonAdaAssets buyerAddr
+
     start <- currentSlot
     timerange start (start + 100)
     changeAddress buyerAddr
