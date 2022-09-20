@@ -1,3 +1,4 @@
+{-# OPTIONS_GHC -fplugin-opt PlutusTx.Plugin:profile-all #-}
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}

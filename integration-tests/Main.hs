@@ -229,6 +229,7 @@ runTests config@Config{..} = hspec $ aroundAllWith (createResources config) $ do
                   { ecOutputDir = Nothing
                   , ecTestnet = cTestnetMagic
                   , ecProtocolParams = cProtocolParams
+                  , ecUseRequiredSigners = True
                   }
             void $ eval evalConfig $ do
               assets <-
@@ -269,13 +270,13 @@ runTests config@Config{..} = hspec $ aroundAllWith (createResources config) $ do
           [ swapSpec seller1 policy1
           , swapSpec seller1 policy2
           , swapSpec seller1 policy3
-          , swapSpec seller1 policy4
-          , swapSpec seller2 policy1
+          -- , swapSpec seller1 policy4
+          -- , swapSpec seller2 policy1
           -- , swapSpec seller2 policy2
           -- , swapSpec seller2 policy3
           -- , swapSpec seller2 policy4
           ]) $ do
-          it "can be purchased in bulk upto 5" $ \(resources, swaps) -> do
+          it "can be really purchased in bulk upto 3" $ \(resources, swaps) -> do
             evalAccepts config resources swaps buyer
 
 main :: IO ()
@@ -365,7 +366,9 @@ createScriptReference Config {..} Resources {..} = do
 
     evalConfig =
       EvalConfig { ecOutputDir = Nothing -- Just "temp/cbor"
-                 , ecTestnet = cTestnetMagic, ecProtocolParams = cProtocolParams }
+                 , ecTestnet = cTestnetMagic
+                 , ecProtocolParams = cProtocolParams
+                 , ecUseRequiredSigners = False}
 
   void $ eval evalConfig $ do
     void $ outputWithScriptReference sellerAddr "50000000 lovelace" cPlutusScript
@@ -393,7 +396,10 @@ evalAccept config@Config {..} Resources {..} theSwap offer = do
 
     evalConfig =
       EvalConfig { ecOutputDir = Nothing -- Just "temp/cbor"
-                 , ecTestnet = cTestnetMagic, ecProtocolParams = cProtocolParams }
+                 , ecTestnet = cTestnetMagic
+                 , ecProtocolParams = cProtocolParams
+                 , ecUseRequiredSigners = True
+                 }
   void $ eval evalConfig $ do
     void . forScriptInputs config [theSwap, offer] $ \(s, _) utxo -> do
       scriptInput utxo cPlutusScript s Accept
@@ -421,7 +427,10 @@ evalAccepts config@Config {..} Resources {..} swaps buyerW = do
       (\Payout {..} -> Map.singleton pAddress pValue)
     evalConfig =
       EvalConfig { ecOutputDir = Nothing -- Just "temp/cbor"
-                                        , ecTestnet = cTestnetMagic, ecProtocolParams = cProtocolParams }
+                 , ecTestnet = cTestnetMagic
+                 , ecProtocolParams = cProtocolParams
+                 , ecUseRequiredSigners = True
+                 }
   void $ eval evalConfig $ do
     swapUtxos <- makeScriptInputs config swaps
     let swapsAndReferenceUtxos = zip swapUtxos rScriptUtxos
@@ -456,7 +465,9 @@ evalAcceptsWithAlwaysSucceeds config@Config {..} Resources {..} swaps buyerW = d
       (\Payout {..} -> Map.singleton pAddress pValue)
     evalConfig =
       EvalConfig { ecOutputDir = Nothing -- Just "temp/cbor"
-                 , ecTestnet = cTestnetMagic, ecProtocolParams = cProtocolParams
+                 , ecTestnet = cTestnetMagic
+                 , ecProtocolParams = cProtocolParams
+                 , ecUseRequiredSigners = True
                  }
 
   AlwaysSucceedDatumAndHash {..} <- lockAlwaysSucceed config $ buyer rWallets
@@ -632,6 +643,7 @@ createCounterOffer Config {..} runTest (rs@Resources { rWallets }, swaps) = do
       EvalConfig { ecOutputDir = Nothing -- Just "temp/cbor"
                  , ecTestnet = cTestnetMagic
                  , ecProtocolParams = cProtocolParams
+                 , ecUseRequiredSigners = True
                  }
 
   datumHash <- hashDatum . toCliJson $ offerDatum
@@ -722,7 +734,10 @@ withWallets :: Config -> ((Wallets, [UTxO]) -> IO c) -> IO c
 withWallets config@Config {..} runTest =
   let
     createWallet' = createWallet config
-    evalConfig = mempty { ecTestnet = cTestnetMagic, ecProtocolParams = cProtocolParams }
+    evalConfig = mempty { ecTestnet = cTestnetMagic
+                        , ecProtocolParams = cProtocolParams
+                        , ecUseRequiredSigners = False
+                        }
   in bracket
     (do
       (wallets, newAddrs) <-
@@ -753,49 +768,39 @@ withWallets config@Config {..} runTest =
 
         waitForNextBlock cTestnetMagic
 
-      txid0 <- eval evalConfig $ do
-        let srcAddr = cSourceWalletAddressPath
-        scriptReferenceValues <- replicateM 4 $ outputWithScriptReference scriptReferenceAddr "25000000 lovelace" cPlutusScript
+      let scriptReferenceDeployTx i = do
+            txId <- eval evalConfig $ do
+              let srcAddr = cSourceWalletAddressPath
+              scriptReferenceValues <- replicateM i $ outputWithScriptReference scriptReferenceAddr "35000000 lovelace" cPlutusScript
 
-        void $ selectInputs (mconcat $ map oValue scriptReferenceValues) srcAddr
+              void $ selectInputs (mconcat $ map oValue scriptReferenceValues) srcAddr
 
-        changeAddress srcAddr
+              changeAddress srcAddr
 
-        sign cSourceWalletSkeyPath
+              sign cSourceWalletSkeyPath
 
-      waitForNextBlock cTestnetMagic
+            waitForNextBlock cTestnetMagic
 
-      putStrLn $ "tx id 0 " <> txid0
+            pure $ flip map [1..fromIntegral i] $ \utxoId -> UTxO
+              { utxoIndex  = utxoId
+              , utxoTx     = txId
+              , utxoValue  = mempty
+              , utxoDatum  = UTxO_NoDatum
+              }
 
-      let scriptReferenceUtxos0 = flip map [1..4] $ \utxoId -> UTxO
-            { utxoIndex  = utxoId
-            , utxoTx     = txid0
-            , utxoValue  = mempty
-            , utxoDatum  = UTxO_NoDatum
-            }
+      scriptReferenceUtxos0 <- scriptReferenceDeployTx 2
+      scriptReferenceUtxos1 <- scriptReferenceDeployTx 2
+      scriptReferenceUtxos2 <- scriptReferenceDeployTx 2
+      scriptReferenceUtxos3 <- scriptReferenceDeployTx 2
 
-      txid1 <- eval evalConfig $ do
-        let srcAddr = cSourceWalletAddressPath
-        scriptReferenceValues <- replicateM 4 $ outputWithScriptReference scriptReferenceAddr "25000000 lovelace" cPlutusScript
+      let allScriptReferenceUtxos = concat
+            [ scriptReferenceUtxos0
+            , scriptReferenceUtxos1
+            , scriptReferenceUtxos2
+            , scriptReferenceUtxos3
+            ]
 
-        void $ selectInputs (mconcat $ map oValue scriptReferenceValues) srcAddr
-
-        changeAddress srcAddr
-
-        sign cSourceWalletSkeyPath
-
-      waitForNextBlock cTestnetMagic
-
-      putStrLn $ "tx id 1 " <> txid1
-
-      let scriptReferenceUtxos1 = flip map [1..4] $ \utxoId -> UTxO
-            { utxoIndex  = utxoId
-            , utxoTx     = txid1
-            , utxoValue  = mempty
-            , utxoDatum  = UTxO_NoDatum
-            }
-
-      pure (wallets, scriptReferenceUtxos0 <> scriptReferenceUtxos1)
+      pure (wallets, allScriptReferenceUtxos)
     )
     (\_ -> pure ())
     runTest
