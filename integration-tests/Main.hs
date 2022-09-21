@@ -270,10 +270,10 @@ runTests config@Config{..} = hspec $ aroundAllWith (createResources config) $ do
           [ swapSpec seller1 policy1
           , swapSpec seller1 policy2
           , swapSpec seller1 policy3
-          -- , swapSpec seller1 policy4
-          -- , swapSpec seller2 policy1
-          -- , swapSpec seller2 policy2
-          -- , swapSpec seller2 policy3
+          , swapSpec seller1 policy4
+          , swapSpec seller2 policy1
+          , swapSpec seller2 policy2
+          , swapSpec seller2 policy3
           -- , swapSpec seller2 policy4
           ]) $ do
           it "can be really purchased in bulk upto 3" $ \(resources, swaps) -> do
