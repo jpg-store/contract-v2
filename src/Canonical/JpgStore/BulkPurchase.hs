@@ -266,7 +266,7 @@ unstableMakeIsData ''SwapTxInInfo
 -------------------------------------------------------------------------------
 
 data Payout = Payout
-  { pAddress :: !SwapAddress
+  { pAddress :: SwapAddress
   , pValue :: !ExpectedValue
   }
 
@@ -291,38 +291,14 @@ isScriptThisInput vh txIn = case sAddressCredential (sTxOutAddress  (sTxInInfoRe
     | otherwise -> TRACE_ERROR("Wrong type of script input", "3")
   _ -> False
 
-mapInsertWith
-  :: (ExpectedValue -> ExpectedValue -> ExpectedValue)
-  -> SwapAddress
-  -> ExpectedValue
-  -> Map SwapAddress ExpectedValue
-  -> Map SwapAddress ExpectedValue
+mapInsertWith :: Eq k => (a -> a -> a) -> k -> a -> Map k a -> Map k a
 mapInsertWith f k v xs = case M.lookup k xs of
   Nothing -> M.insert k v xs
   Just v' -> M.insert k (f v v') xs
 
 mergePayouts :: Payout -> Map SwapAddress ExpectedValue -> Map SwapAddress ExpectedValue
 mergePayouts Payout {..} =
-  mapInsertWith unionExpectedValue' pAddress pValue
-
-insertIntoTokenMap
-  :: (TokenName, WholeNumber)
-  -> Map TokenName WholeNumber
-  -> Map TokenName WholeNumber
-insertIntoTokenMap (k, v) m = case M.lookup k m of
-  Nothing -> M.insert k v m
-  Just v' -> M.insert k (v + v') m
-
-insertIntoExpectedValue
-  :: (CurrencySymbol, (Natural, M.Map TokenName WholeNumber))
-  -> ExpectedValue
-  -> ExpectedValue
-insertIntoExpectedValue (cs, v@(n, tm)) e = case M.lookup cs e of
-  Nothing -> M.insert cs v e
-  Just (n', tm') -> M.insert cs (n + n', foldr insertIntoTokenMap tm (M.toList tm')) e
-
-unionExpectedValue' :: ExpectedValue -> ExpectedValue -> ExpectedValue
-unionExpectedValue' l r = foldr insertIntoExpectedValue l (M.toList r)
+  mapInsertWith unionExpectedValue pAddress pValue
 
 paidAtleastTo :: [SwapTxOut] -> SwapAddress -> ExpectedValue -> Bool
 paidAtleastTo outputs addr val = satisfyExpectations val (valuePaidTo' outputs addr)
