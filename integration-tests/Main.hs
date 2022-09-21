@@ -771,7 +771,7 @@ withWallets config@Config {..} runTest =
       let scriptReferenceDeployTx i = do
             txId <- eval evalConfig $ do
               let srcAddr = cSourceWalletAddressPath
-              scriptReferenceValues <- replicateM i $ outputWithScriptReference scriptReferenceAddr "35000000 lovelace" cPlutusScript
+              scriptReferenceValues <- replicateM i $ outputWithScriptReference scriptReferenceAddr "40000000 lovelace" cPlutusScript
 
               void $ selectInputs (mconcat $ map oValue scriptReferenceValues) srcAddr
 
@@ -788,17 +788,11 @@ withWallets config@Config {..} runTest =
               , utxoDatum  = UTxO_NoDatum
               }
 
-      scriptReferenceUtxos0 <- scriptReferenceDeployTx 2
-      scriptReferenceUtxos1 <- scriptReferenceDeployTx 2
-      scriptReferenceUtxos2 <- scriptReferenceDeployTx 2
-      scriptReferenceUtxos3 <- scriptReferenceDeployTx 2
 
-      let allScriptReferenceUtxos = concat
-            [ scriptReferenceUtxos0
-            , scriptReferenceUtxos1
-            , scriptReferenceUtxos2
-            , scriptReferenceUtxos3
-            ]
+
+      allScriptReferenceUtxos
+        <-   concat
+        <$> replicateM 8 (scriptReferenceDeployTx 1)
 
       pure (wallets, allScriptReferenceUtxos)
     )

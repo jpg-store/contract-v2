@@ -341,21 +341,21 @@ swapValidator _ r SwapScriptContext{sScriptContextTxInfo = partialInfo@PartialSw
   let
 
     thisValidator :: ValidatorHash
-    thisValidator = ownHash' pTxInfoInputs thisOutRef
+    !thisValidator = ownHash' pTxInfoInputs thisOutRef
 
     scriptInputs :: [SwapTxInInfo]
-    scriptInputs = filter (isScriptThisInput thisValidator) pTxInfoInputs
+    !scriptInputs = filter (isScriptThisInput thisValidator) pTxInfoInputs
 
   -- This allows the script to validate all inputs and outputs on only one script input.
   -- Ignores other script inputs being validated each time
   in if sTxInInfoOutRef (head scriptInputs) /= thisOutRef then True else
     let
       singleSigner :: PubKeyHash
-      singleSigner = case sTxInfoSignatories of
+      !singleSigner = case sTxInfoSignatories of
         [x] -> x
         _ -> TRACE_ERROR("single signer expected", "1")
 
-      SwapTxInfo{..} = convertToSwapTxInfo partialInfo
+      !SwapTxInfo{..} = convertToSwapTxInfo partialInfo
 
       lookupDatum :: SwapTxInInfo -> Swap
       lookupDatum SwapTxInInfo { sTxInInfoResolved = SwapTxOut {sTxOutDatum = theOutDatum}} =
