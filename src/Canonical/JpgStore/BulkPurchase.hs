@@ -127,8 +127,25 @@ data SwapTxInfo = SwapTxInfo
   , sTxInfoId :: BuiltinData
   }
 
+data PartialSwapAddress = PartialSwapAddress
+  { psAddressCredential        :: Credential
+  , psAddressStakingCredential :: BuiltinData
+  }
+
+data PartialSwapTxOut = PartialSwapTxOut
+  { psTxOutAddress         :: PartialSwapAddress
+  , psTxOutValue           :: BuiltinData
+  , psTxOutDatum           :: BuiltinData
+  , psTxOutReferenceScript :: BuiltinData
+  }
+
+data PartialSwapTxInInfo = PartialSwapTxInInfo
+  { psTxInInfoOutRef   :: BuiltinData
+  , psTxInInfoResolved :: PartialSwapTxOut
+  }
+
 data PartialSwapTxInfo = PartialSwapTxInfo
-  { pTxInfoInputs :: [SwapTxInInfo]
+  { pTxInfoInputs :: [PartialSwapTxInInfo]
   , pTxInfoReferenceInputs    :: BuiltinData
   , pTxInfoOutputs :: BuiltinData
   , pTxInfoFee :: BuiltinData
@@ -142,9 +159,29 @@ data PartialSwapTxInfo = PartialSwapTxInfo
   , pTxInfoId :: BuiltinData
   }
 
+convertToSwapInputs :: PartialSwapTxInInfo -> SwapTxInInfo
+convertToSwapInputs PartialSwapTxInInfo {..} = SwapTxInInfo
+  { sTxInInfoOutRef = unsafeFromBuiltinData psTxInInfoOutRef
+  , sTxInInfoResolved = convertToSwapOutput psTxInInfoResolved
+  }
+
+convertToSwapOutput :: PartialSwapTxOut -> SwapTxOut
+convertToSwapOutput PartialSwapTxOut {..} = SwapTxOut
+  { sTxOutAddress = convertToSwapAddress psTxOutAddress
+  , sTxOutValue = unsafeFromBuiltinData psTxOutValue
+  , sTxOutDatum = unsafeFromBuiltinData psTxOutDatum
+  , sTxOutReferenceScript = psTxOutReferenceScript
+  }
+
+convertToSwapAddress :: PartialSwapAddress -> SwapAddress
+convertToSwapAddress PartialSwapAddress {..} = SwapAddress
+  { sAddressCredential = psAddressCredential
+  , sAddressStakingCredential = unsafeFromBuiltinData psAddressStakingCredential
+  }
+
 convertToSwapTxInfo :: PartialSwapTxInfo -> SwapTxInfo
 convertToSwapTxInfo PartialSwapTxInfo {..} = SwapTxInfo
-  { sTxInfoInputs          = pTxInfoInputs
+  { sTxInfoInputs          = []
   , sTxInfoReferenceInputs = pTxInfoReferenceInputs
   , sTxInfoOutputs         = unsafeFromBuiltinData pTxInfoOutputs
   , sTxInfoFee             = pTxInfoFee
@@ -241,20 +278,23 @@ addressOutputsAt addr outs =
       | otherwise = Nothing
   in mapMaybe flt outs
 
-ownHash' :: [SwapTxInInfo] -> TxOutRef -> ValidatorHash
+ownHash' :: [PartialSwapTxInInfo] -> TxOutRef -> ValidatorHash
 ownHash' ins txOutRef = go ins where
     go = \case
       [] -> TRACE_ERROR("The impossible happened", "-1")
-      SwapTxInInfo {..} :xs ->
-        if sTxInInfoOutRef == txOutRef then
-          case sTxOutAddress sTxInInfoResolved of
-            SwapAddress (ScriptCredential s) _ -> s
+      PartialSwapTxInInfo {..} : xs ->
+        if unsafeFromBuiltinData psTxInInfoOutRef == txOutRef then
+          case psTxOutAddress psTxInInfoResolved of
+            PartialSwapAddress (ScriptCredential s) _ -> s
             _ -> TRACE_ERROR("The impossible happened", "-1")
         else
           go xs
 
 unstableMakeIsData ''SwapTxInfo
 unstableMakeIsData ''SwapScriptContext
+unstableMakeIsData ''PartialSwapAddress
+unstableMakeIsData ''PartialSwapTxOut
+unstableMakeIsData ''PartialSwapTxInInfo
 unstableMakeIsData ''PartialSwapTxInfo
 makeIsDataIndexed  ''SwapScriptPurpose [('ASpending,1)]
 unstableMakeIsData ''SwapAddress
@@ -284,12 +324,13 @@ data Action
 -------------------------------------------------------------------------------
 -- Utilities
 -------------------------------------------------------------------------------
-isScriptThisInput :: ValidatorHash -> SwapTxInInfo -> Bool
-isScriptThisInput vh txIn = case sAddressCredential (sTxOutAddress  (sTxInInfoResolved txIn)) of
-  ScriptCredential vh'
-    | vh' == vh -> True
-    | otherwise -> TRACE_ERROR("Wrong type of script input", "3")
-  _ -> False
+isScriptThisInput :: ValidatorHash -> PartialSwapTxInInfo -> Bool
+isScriptThisInput vh PartialSwapTxInInfo { psTxInInfoResolved = PartialSwapTxOut { psTxOutAddress = PartialSwapAddress { psAddressCredential }}}
+  = case psAddressCredential of
+      ScriptCredential vh'
+        | vh' == vh -> True
+        | otherwise -> TRACE_ERROR("Wrong type of script input", "3")
+      _ -> False
 
 mapInsertWith :: Eq k => (a -> a -> a) -> k -> a -> Map k a -> Map k a
 mapInsertWith f k v xs = case M.lookup k xs of
@@ -342,13 +383,16 @@ swapValidator _ r SwapScriptContext{sScriptContextTxInfo = partialInfo@PartialSw
     thisValidator :: ValidatorHash
     !thisValidator = ownHash' pTxInfoInputs thisOutRef
 
-    scriptInputs :: [SwapTxInInfo]
-    !scriptInputs = filter (isScriptThisInput thisValidator) pTxInfoInputs
+    partialScriptInputs :: [PartialSwapTxInInfo]
+    !partialScriptInputs = filter (isScriptThisInput thisValidator) pTxInfoInputs
 
   -- This allows the script to validate all inputs and outputs on only one script input.
   -- Ignores other script inputs being validated each time
-  in if sTxInInfoOutRef (head scriptInputs) /= thisOutRef then True else
+  in if unsafeFromBuiltinData (psTxInInfoOutRef (head partialScriptInputs)) /= thisOutRef then True else
     let
+      scriptInputs :: [SwapTxInInfo]
+      !scriptInputs = map convertToSwapInputs partialScriptInputs
+
       singleSigner :: PubKeyHash
       !singleSigner = case sTxInfoSignatories of
         [x] -> x
