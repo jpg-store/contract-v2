@@ -44,7 +44,6 @@ library
     , cardano-api
     , containers
     , filepath
-    , plutus-ledger
     , plutus-ledger-api
     , plutus-tx
     , plutus-tx-plugin
@@ -64,7 +63,6 @@ executable create-smart-contract
     , cardano-ledger-alonzo
     , jpg-store-bulk-purchase
     , optparse-applicative
-    , plutus-ledger
     , plutus-ledger-api
 
 test-suite integration-tests
@@ -90,7 +88,6 @@ test-suite integration-tests
     , managed
     , mtl
     , plutus-core
-    , plutus-ledger
     , plutus-ledger-api
     , plutus-tx
     , plutus-tx-plugin
