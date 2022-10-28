@@ -20,19 +20,10 @@ data SwapConfig = SwapConfig
   , scConfigNftTokenName :: TokenName
   }
 
-data NonEmptyPubKeyHashList = NonEmptyPubKeyHashList
-  { nepkhlHead :: PubKeyHash
-  , nepkhlTail :: [PubKeyHash]
-  }
+-- TODO
+-- Specialize to work around compliation issue
 
-{-# INLINABLE nonEmptyToList #-}
-nonEmptyToList :: NonEmptyPubKeyHashList -> [PubKeyHash]
-nonEmptyToList (NonEmptyPubKeyHashList x xs) = x : xs
 
-data SwapDynamicConfig = SwapDynamicConfig
-  { sdcValidOutputPkhs :: NonEmptyPubKeyHashList
-  , sdcMarketplacePkhs :: NonEmptyPubKeyHashList
-  }
 
 data Bid = Bid
   { bidBidder         :: PubKeyHash
@@ -141,5 +132,3 @@ wrapMint f a b
     )
 
 makeLift ''SwapConfig
-unstableMakeIsData ''NonEmptyPubKeyHashList
-unstableMakeIsData ''SwapDynamicConfig

@@ -8,6 +8,8 @@ import qualified Data.ByteString.Short as BSS
 import           Plutus.V2.Ledger.Contexts
 import           Plutus.V1.Ledger.Scripts
 import           Plutus.V2.Ledger.Tx
+import           Plutus.V1.Ledger.Crypto
+import           Plutus.V1.Ledger.Address
 import Plutus.V1.Ledger.Value
 import PlutusTx
 import qualified PlutusTx.AssocMap as M
@@ -22,6 +24,33 @@ data NftConfig = NftConfig
   , ncTokenName   :: TokenName
   }
 
+data NonEmptyAddress = NonEmptyAddress
+  { neaHead :: Address
+  , nealTail :: [Address]
+  }
+
+{-# INLINABLE nonEmptyAddressToList #-}
+nonEmptyAddressToList :: NonEmptyAddress -> [Address]
+nonEmptyAddressToList (NonEmptyAddress x xs) = x : xs
+
+data NonEmptyPubKeyHash = NonEmptyPubKeyHash
+  { nepkhHead :: PubKeyHash
+  , nepkhTail :: [PubKeyHash]
+  }
+
+{-# INLINABLE nonEmptyPubKeyHashToList #-}
+nonEmptyPubKeyHashToList :: NonEmptyPubKeyHash -> [PubKeyHash]
+nonEmptyPubKeyHashToList (NonEmptyPubKeyHash x xs) = x : xs
+
+data SwapDynamicConfig = SwapDynamicConfig
+  { sdcValidOutputAddresses :: NonEmptyAddress
+  -- ^ change this to addresses
+  , sdcMarketplacePkhs :: NonEmptyPubKeyHash
+  }
+
+unstableMakeIsData ''NonEmptyAddress
+unstableMakeIsData ''NonEmptyPubKeyHash
+unstableMakeIsData ''SwapDynamicConfig
 makeLift ''NftConfig
 
 mkNftMinter :: NftConfig -> BuiltinData -> ScriptContext -> Bool

@@ -5,7 +5,7 @@ module Canonical.JpgStore.BulkPurchase
   , Payout(..)
   , Action(..)
   , Swap(..)
-  , SwapAddress(..)
+  , Address(..)
   , WholeNumber(..)
   , swap
   , writePlutusFile
@@ -22,6 +22,7 @@ import Cardano.Api.Shelley (PlutusScript(..), PlutusScriptV2)
 import Codec.Serialise (serialise)
 import qualified Data.ByteString.Lazy as LB
 import qualified Data.ByteString.Short as SBS
+import           Plutus.V1.Ledger.Address
 import           Plutus.V1.Ledger.Crypto
 import           Plutus.V2.Ledger.Contexts
 import           Plutus.V1.Ledger.Scripts
@@ -78,18 +79,8 @@ instance UnsafeFromData Natural where
       then Natural i
       else TRACE_ERROR("Natural is less than 0", "-3")
 
-data SwapAddress = SwapAddress
-  { sAddressCredential :: Credential
-  , sAddressStakingCredential :: Maybe StakingCredential
-  }
-
-instance Eq SwapAddress where
-  x == y
-    =  sAddressCredential        x == sAddressCredential        y
-    && sAddressStakingCredential x == sAddressStakingCredential y
-
 data SwapTxOut = SwapTxOut
-  { sTxOutAddress         :: SwapAddress
+  { sTxOutAddress         :: Address
   , sTxOutValue           :: Value
   , sTxOutDatum           :: OutputDatum
   , sTxOutReferenceScript :: BuiltinData
@@ -153,10 +144,10 @@ convertToSwapOutput PartialSwapTxOut {..} = SwapTxOut
   , sTxOutReferenceScript = psTxOutReferenceScript
   }
 
-convertToSwapAddress :: PartialSwapAddress -> SwapAddress
-convertToSwapAddress PartialSwapAddress {..} = SwapAddress
-  { sAddressCredential = psAddressCredential
-  , sAddressStakingCredential = unsafeFromBuiltinData psAddressStakingCredential
+convertToSwapAddress :: PartialSwapAddress -> Address
+convertToSwapAddress PartialSwapAddress {..} = Address
+  { addressCredential = psAddressCredential
+  , addressStakingCredential = unsafeFromBuiltinData psAddressStakingCredential
   }
 
 convertToSwapTxInfo :: PartialSwapTxInfo -> SwapTxInfo
@@ -239,10 +230,10 @@ hasEnoughCoin tokenMap (tkn, WholeNumber count) mAccumMap  = mAccumMap >>= \accu
       | otherwise            -> Nothing
     _ -> Nothing
 
-valuePaidTo' :: [SwapTxOut] -> SwapAddress -> Value
+valuePaidTo' :: [SwapTxOut] -> Address -> Value
 valuePaidTo' outs addr = mconcat (addressOutputsAt addr outs)
 
-addressOutputsAt :: SwapAddress -> [SwapTxOut] -> [Value]
+addressOutputsAt :: Address -> [SwapTxOut] -> [Value]
 addressOutputsAt addr outs =
   let
     flt SwapTxOut { sTxOutAddress, sTxOutValue }
@@ -269,7 +260,6 @@ unstableMakeIsData ''PartialSwapTxOut
 unstableMakeIsData ''PartialSwapTxInInfo
 unstableMakeIsData ''PartialSwapTxInfo
 makeIsDataIndexed  ''SwapScriptPurpose [('ASpending,1)]
-unstableMakeIsData ''SwapAddress
 unstableMakeIsData ''SwapTxOut
 unstableMakeIsData ''SwapTxInInfo
 
@@ -278,7 +268,7 @@ unstableMakeIsData ''SwapTxInInfo
 -------------------------------------------------------------------------------
 
 data Payout = Payout
-  { pAddress :: SwapAddress
+  { pAddress :: Address
   , pValue :: !ExpectedValue
   }
 
@@ -309,11 +299,11 @@ mapInsertWith f k v xs = case M.lookup k xs of
   Nothing -> M.insert k v xs
   Just v' -> M.insert k (f v v') xs
 
-mergePayouts :: Payout -> Map SwapAddress ExpectedValue -> Map SwapAddress ExpectedValue
+mergePayouts :: Payout -> Map Address ExpectedValue -> Map Address ExpectedValue
 mergePayouts Payout {..} =
   mapInsertWith unionExpectedValue pAddress pValue
 
-paidAtleastTo :: [SwapTxOut] -> SwapAddress -> ExpectedValue -> Bool
+paidAtleastTo :: [SwapTxOut] -> Address -> ExpectedValue -> Bool
 paidAtleastTo outputs addr val = satisfyExpectations val (valuePaidTo' outputs addr)
 
 hasConfigNft :: CurrencySymbol -> TokenName -> SwapTxInInfo -> Bool
@@ -336,9 +326,36 @@ instance Eq Action where
     (Accept, Accept) -> True
     (Accept, _) -> False
 
-PlutusTx.unstableMakeIsData ''Payout
-PlutusTx.unstableMakeIsData ''Swap
-PlutusTx.unstableMakeIsData ''Action
+data NonEmptyAddress = NonEmptyAddress
+  { neaHead :: Address
+  , nealTail :: [Address]
+  }
+
+{-# INLINABLE nonEmptyAddressToList #-}
+nonEmptyAddressToList :: NonEmptyAddress -> [Address]
+nonEmptyAddressToList (NonEmptyAddress x xs) = x : xs
+
+data NonEmptyPubKeyHash = NonEmptyPubKeyHash
+  { nepkhHead :: PubKeyHash
+  , nepkhTail :: [PubKeyHash]
+  }
+
+{-# INLINABLE nonEmptyPubKeyHashToList #-}
+nonEmptyPubKeyHashToList :: NonEmptyPubKeyHash -> [PubKeyHash]
+nonEmptyPubKeyHashToList (NonEmptyPubKeyHash x xs) = x : xs
+
+data SwapDynamicConfig = SwapDynamicConfig
+  { sdcValidOutputAddresses :: NonEmptyAddress
+  -- ^ change this to addresses
+  , sdcMarketplacePkhs :: NonEmptyPubKeyHash
+  }
+
+unstableMakeIsData ''NonEmptyAddress
+unstableMakeIsData ''NonEmptyPubKeyHash
+unstableMakeIsData ''SwapDynamicConfig
+unstableMakeIsData ''Payout
+unstableMakeIsData ''Swap
+unstableMakeIsData ''Action
 
 -------------------------------------------------------------------------------
 -- Validation
@@ -346,7 +363,7 @@ PlutusTx.unstableMakeIsData ''Action
 -- check that each user is paid
 -- and the total is correct
 {-# HLINT ignore validateOutputConstraints "Use uncurry" #-}
-validateOutputConstraints :: [SwapTxOut] -> Map SwapAddress ExpectedValue -> Bool
+validateOutputConstraints :: [SwapTxOut] -> Map Address ExpectedValue -> Bool
 validateOutputConstraints outputs constraints = all (\(addr, v) -> paidAtleastTo outputs addr v) (M.toList constraints)
 
 -- Every branch but user initiated cancel requires checking the input
@@ -406,7 +423,7 @@ swapValidator SwapConfig {..} _ r SwapScriptContext{sScriptContextTxInfo = parti
         [] -> TRACE_ERROR("The impossible happened", "6")
         xs -> xs
 
-      outputsAreValid :: Map SwapAddress ExpectedValue -> Bool
+      outputsAreValid :: Map Address ExpectedValue -> Bool
       outputsAreValid = validateOutputConstraints sTxInfoOutputs
 
     in case r of
@@ -414,25 +431,50 @@ swapValidator SwapConfig {..} _ r SwapScriptContext{sScriptContextTxInfo = parti
         let
           signerIsOwner :: Swap -> Bool
           signerIsOwner Swap{sOwner} = isSigner sTxInfoSignatories sOwner
-        in TRACE_IF_FALSE("signer is not the owner", "4", (all signerIsOwner swaps))
+
+          allScriptValue :: Value
+          allScriptValue =
+            foldr (\SwapTxInInfo {sTxInInfoResolved = SwapTxOut {sTxOutValue}} acc ->
+                    sTxOutValue <> acc
+                  )
+                  mempty
+                  scriptInputs
+
+          isValidOutput :: Address -> Bool
+          isValidOutput address = any (address==) (nonEmptyAddressToList sdcValidOutputAddresses)
+
+          validOutputsValue :: Value
+          validOutputsValue =
+            foldr (\SwapTxOut {sTxOutValue, sTxOutAddress} acc ->
+                    if isValidOutput sTxOutAddress then sTxOutValue <> acc else acc
+                  )
+                  mempty
+                  sTxInfoOutputs
+
+          outputAddressesAreValid :: Bool
+          outputAddressesAreValid = validOutputsValue `geq` allScriptValue
+
+        in traceIfFalse "signer is not the owner" (all signerIsOwner swaps)
+        && traceIfFalse "wrong output address" outputAddressesAreValid
 
       Accept ->
         -- Acts like a buy, but we ignore any payouts that go to the signer of the
         -- transaction. This allows the seller to accept an offer from a buyer that
         -- does not pay the seller as much as they requested
+        -- TODO add the marketplace payout
         let
-          accumPayouts :: Swap -> Map SwapAddress ExpectedValue -> Map SwapAddress ExpectedValue
+          accumPayouts :: Swap -> Map Address ExpectedValue -> Map Address ExpectedValue
           accumPayouts Swap{..} acc
             | isSigner sTxInfoSignatories sOwner = acc
             | otherwise = foldr mergePayouts acc sSwapPayouts
 
           -- assume all redeemers are accept, all the payouts should be paid (excpet those to the signer)
-          payouts :: Map SwapAddress ExpectedValue
+          payouts :: Map Address ExpectedValue
           !payouts = foldr accumPayouts M.empty swaps
 
           marketPlaceSigned :: Bool
           !marketPlaceSigned =
-            any (\x -> any (x==) (nonEmptyToList sdcMarketplacePkhs)) sTxInfoSignatories
+            any (\x -> any (x==) (nonEmptyPubKeyHashToList sdcMarketplacePkhs)) sTxInfoSignatories
 
         in traceIfFalse "wrong output" (outputsAreValid payouts)
         && traceIfFalse "missing the marketplace signature" marketPlaceSigned
