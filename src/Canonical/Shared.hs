@@ -25,6 +25,10 @@ data NonEmptyPubKeyHashList = NonEmptyPubKeyHashList
   , nepkhlTail :: [PubKeyHash]
   }
 
+{-# INLINABLE nonEmptyToList #-}
+nonEmptyToList :: NonEmptyPubKeyHashList -> [PubKeyHash]
+nonEmptyToList (NonEmptyPubKeyHashList x xs) = x : xs
+
 data SwapDynamicConfig = SwapDynamicConfig
   { sdcValidOutputPkhs :: NonEmptyPubKeyHashList
   , sdcMarketplacePkhs :: NonEmptyPubKeyHashList

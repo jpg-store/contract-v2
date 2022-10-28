@@ -386,7 +386,7 @@ swapValidator SwapConfig {..} _ r SwapScriptContext{sScriptContextTxInfo = parti
         in FROM_BUILT_IN_DATA("lookupDatum datum conversion failed", "2", d, SwapDynamicConfig)
 
       -- find the configuration datum
-      _temp = case filter (hasConfigNft scConfigNftPolicyId scConfigNftTokenName) sTxInfoReferenceInputs of
+      SwapDynamicConfig {..} = case filter (hasConfigNft scConfigNftPolicyId scConfigNftTokenName) sTxInfoReferenceInputs of
         [x] -> lookupSwapDynamicConfigDatum x
         _ -> traceError "missing or wrong number of swap config reference inputs!"
 
@@ -428,9 +428,14 @@ swapValidator SwapConfig {..} _ r SwapScriptContext{sScriptContextTxInfo = parti
 
           -- assume all redeemers are accept, all the payouts should be paid (excpet those to the signer)
           payouts :: Map SwapAddress ExpectedValue
-          payouts = foldr accumPayouts M.empty swaps
+          !payouts = foldr accumPayouts M.empty swaps
+
+          marketPlaceSigned :: Bool
+          !marketPlaceSigned =
+            any (\x -> any (x==) (nonEmptyToList sdcMarketplacePkhs)) sTxInfoSignatories
+
         in traceIfFalse "wrong output" (outputsAreValid payouts)
-        && traceIfFalse "missing the marketplace signature" False
+        && traceIfFalse "missing the marketplace signature" marketPlaceSigned
 -------------------------------------------------------------------------------
 -- Entry Points
 -------------------------------------------------------------------------------
