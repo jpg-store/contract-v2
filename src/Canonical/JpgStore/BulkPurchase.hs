@@ -1,16 +1,4 @@
-{-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE CPP #-}
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE TypeFamilies #-}
-
 module Canonical.JpgStore.BulkPurchase
   ( ExpectedValue
   , Natural(..)
@@ -52,7 +40,7 @@ import qualified Plutonomy
 #include "../DebugUtilities.h"
 
 newtype WholeNumber = WholeNumber { unWholeNumber :: Integer }
-  deriving(Eq, AdditiveSemigroup, Ord, ToData)
+  deriving newtype (Eq, AdditiveSemigroup, Ord, ToData)
 
 mkWholeNumber :: Integer -> WholeNumber
 mkWholeNumber i
@@ -74,7 +62,7 @@ instance UnsafeFromData WholeNumber where
       else TRACE_ERROR("WholeNumber is less than 1", "-2")
 
 newtype Natural = Natural Integer
-  deriving(Eq, AdditiveSemigroup, AdditiveMonoid, Ord, ToData)
+  deriving newtype (Eq, AdditiveSemigroup, AdditiveMonoid, Ord, ToData)
 
 instance FromData Natural where
   fromBuiltinData x = case fromBuiltinData x of
@@ -376,8 +364,8 @@ validateOutputConstraints outputs constraints = all (\(addr, v) -> paidAtleastTo
 
 -- Every branch but user initiated cancel requires checking the input
 -- to ensure there is only one script input.
-swapValidator :: BuiltinData -> Action -> SwapScriptContext -> Bool
-swapValidator _ r SwapScriptContext{sScriptContextTxInfo = partialInfo@PartialSwapTxInfo{..}, sScriptContextPurpose = ASpending thisOutRef} =
+swapValidator :: SwapConfig -> BuiltinData -> Action -> SwapScriptContext -> Bool
+swapValidator SwapConfig {} _ r SwapScriptContext{sScriptContextTxInfo = partialInfo@PartialSwapTxInfo{..}, sScriptContextPurpose = ASpending thisOutRef} =
   let
 
     thisValidator :: ValidatorHash
@@ -444,19 +432,23 @@ swapValidator _ r SwapScriptContext{sScriptContextTxInfo = partialInfo@PartialSw
 -- Entry Points
 -------------------------------------------------------------------------------
 
-swapWrapped :: BuiltinData -> BuiltinData -> BuiltinData -> ()
-swapWrapped = wrap swapValidator
+swapWrapped :: SwapConfig -> BuiltinData -> BuiltinData -> BuiltinData -> ()
+swapWrapped = wrap . swapValidator
 
-validator :: Validator
-validator = Plutonomy.optimizeUPLC $ Plutonomy.validatorToPlutus $ Plutonomy.mkValidatorScript $$(PlutusTx.compile [|| swapWrapped ||])
+validator :: SwapConfig -> Validator
+validator cfg =
+  Plutonomy.optimizeUPLC $ Plutonomy.validatorToPlutus $ Plutonomy.mkValidatorScript $
+    $$(PlutusTx.compile [|| swapWrapped ||])
+    `applyCode`
+    liftCode cfg
 
-swap :: PlutusScript PlutusScriptV2
-swap = PlutusScriptSerialised . SBS.toShort . LB.toStrict . serialise $ validator
+swap :: SwapConfig -> PlutusScript PlutusScriptV2
+swap = PlutusScriptSerialised . SBS.toShort . LB.toStrict . serialise . validator
 
-swapHash :: ValidatorHash
-swapHash = validatorHash validator
+swapHash :: SwapConfig -> ValidatorHash
+swapHash = validatorHash . validator
 
-writePlutusFile :: FilePath -> IO ()
-writePlutusFile filePath = Api.writeFileTextEnvelope filePath Nothing swap >>= \case
+writePlutusFile :: SwapConfig -> FilePath -> IO ()
+writePlutusFile cfg filePath = Api.writeFileTextEnvelope filePath Nothing (swap cfg) >>= \case
   Left err -> print $ Api.displayError err
   Right () -> putStrLn $ "wrote NFT validator to file " ++ filePath
