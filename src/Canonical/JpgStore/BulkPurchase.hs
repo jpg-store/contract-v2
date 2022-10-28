@@ -89,8 +89,8 @@ instance Eq SwapAddress where
     && sAddressStakingCredential x == sAddressStakingCredential y
 
 data SwapTxOut = SwapTxOut
-  { sTxOutAddress :: SwapAddress
-  , sTxOutValue :: Value
+  { sTxOutAddress         :: SwapAddress
+  , sTxOutValue           :: Value
   , sTxOutDatum           :: OutputDatum
   , sTxOutReferenceScript :: BuiltinData
   }
@@ -101,18 +101,10 @@ data SwapTxInInfo = SwapTxInInfo
   }
 
 data SwapTxInfo = SwapTxInfo
-  { sTxInfoInputs :: [SwapTxInInfo]
-  , sTxInfoReferenceInputs    :: BuiltinData
+  { sTxInfoReferenceInputs :: [SwapTxInInfo]
   , sTxInfoOutputs :: [SwapTxOut]
-  , sTxInfoFee :: BuiltinData
-  , sTxInfoMint :: BuiltinData
-  , sTxInfoDCert :: BuiltinData
-  , sTxInfoWdrl :: BuiltinData
-  , sTxInfoValidRange :: BuiltinData
   , sTxInfoSignatories :: [PubKeyHash]
-  , sTxInfoRedeemers          :: BuiltinData
   , sTxInfoData :: Map DatumHash Datum
-  , sTxInfoId :: BuiltinData
   }
 
 data PartialSwapAddress = PartialSwapAddress
@@ -169,18 +161,10 @@ convertToSwapAddress PartialSwapAddress {..} = SwapAddress
 
 convertToSwapTxInfo :: PartialSwapTxInfo -> SwapTxInfo
 convertToSwapTxInfo PartialSwapTxInfo {..} = SwapTxInfo
-  { sTxInfoInputs          = []
-  , sTxInfoReferenceInputs = pTxInfoReferenceInputs
+  { sTxInfoReferenceInputs = unsafeFromBuiltinData pTxInfoReferenceInputs
   , sTxInfoOutputs         = unsafeFromBuiltinData pTxInfoOutputs
-  , sTxInfoFee             = pTxInfoFee
-  , sTxInfoMint            = pTxInfoMint
-  , sTxInfoDCert           = pTxInfoDCert
-  , sTxInfoWdrl            = pTxInfoWdrl
-  , sTxInfoValidRange      = pTxInfoValidRange
   , sTxInfoSignatories     = unsafeFromBuiltinData pTxInfoSignatories
-  , sTxInfoRedeemers       = pTxInfoRedeemers
   , sTxInfoData            = unsafeFromBuiltinData pTxInfoData
-  , sTxInfoId              = pTxInfoId
   }
 
 {- HLINT ignore SwapScriptPurpose -}
@@ -331,6 +315,9 @@ mergePayouts Payout {..} =
 
 paidAtleastTo :: [SwapTxOut] -> SwapAddress -> ExpectedValue -> Bool
 paidAtleastTo outputs addr val = satisfyExpectations val (valuePaidTo' outputs addr)
+
+hasConfigNft :: CurrencySymbol -> TokenName -> SwapTxInInfo -> Bool
+hasConfigNft = error ()
 -------------------------------------------------------------------------------
 -- Boilerplate
 -------------------------------------------------------------------------------
@@ -365,7 +352,7 @@ validateOutputConstraints outputs constraints = all (\(addr, v) -> paidAtleastTo
 -- Every branch but user initiated cancel requires checking the input
 -- to ensure there is only one script input.
 swapValidator :: SwapConfig -> BuiltinData -> Action -> SwapScriptContext -> Bool
-swapValidator SwapConfig {} _ r SwapScriptContext{sScriptContextTxInfo = partialInfo@PartialSwapTxInfo{..}, sScriptContextPurpose = ASpending thisOutRef} =
+swapValidator SwapConfig {..} _ r SwapScriptContext{sScriptContextTxInfo = partialInfo@PartialSwapTxInfo{..}, sScriptContextPurpose = ASpending thisOutRef} =
   let
 
     thisValidator :: ValidatorHash
@@ -388,8 +375,24 @@ swapValidator SwapConfig {} _ r SwapScriptContext{sScriptContextTxInfo = partial
 
       !SwapTxInfo{..} = convertToSwapTxInfo partialInfo
 
-      lookupDatum :: SwapTxInInfo -> Swap
-      lookupDatum SwapTxInInfo { sTxInInfoResolved = SwapTxOut {sTxOutDatum = theOutDatum}} =
+      lookupSwapDynamicConfigDatum :: SwapTxInInfo -> SwapDynamicConfig
+      lookupSwapDynamicConfigDatum SwapTxInInfo { sTxInInfoResolved = SwapTxOut {sTxOutDatum = theOutDatum}} =
+        let Datum d = case theOutDatum of
+              OutputDatum a -> a
+              OutputDatumHash dh -> go (M.toList sTxInfoData) where
+                go = \case
+                  [] -> TRACE_ERROR("The impossible happened", "-1")
+                  (k, v):xs' -> if k == dh then v else go xs'
+              NoOutputDatum -> TRACE_ERROR("The impossible happened", "7")
+        in FROM_BUILT_IN_DATA("lookupDatum datum conversion failed", "2", d, SwapDynamicConfig)
+
+      -- find the configuration datum
+      _temp = case filter (hasConfigNft scConfigNftPolicyId scConfigNftTokenName) sTxInfoReferenceInputs of
+        [x] -> lookupSwapDynamicConfigDatum x
+        _ -> traceError "missing or wrong number of swap config reference inputs!"
+
+      lookupSwapDatum :: SwapTxInInfo -> Swap
+      lookupSwapDatum SwapTxInInfo { sTxInInfoResolved = SwapTxOut {sTxOutDatum = theOutDatum}} =
         let Datum d = case theOutDatum of
               OutputDatum a -> a
               OutputDatumHash dh -> go (M.toList sTxInfoData) where
@@ -400,7 +403,7 @@ swapValidator SwapConfig {} _ r SwapScriptContext{sScriptContextTxInfo = partial
         in FROM_BUILT_IN_DATA("lookupDatum datum conversion failed", "2", d, Swap)
 
       swaps :: [Swap]
-      swaps = case map (\i -> lookupDatum i) scriptInputs of
+      swaps = case map (\i -> lookupSwapDatum i) scriptInputs of
         [] -> TRACE_ERROR("The impossible happened", "6")
         xs -> xs
 
@@ -427,7 +430,8 @@ swapValidator SwapConfig {} _ r SwapScriptContext{sScriptContextTxInfo = partial
           -- assume all redeemers are accept, all the payouts should be paid (excpet those to the signer)
           payouts :: Map SwapAddress ExpectedValue
           payouts = foldr accumPayouts M.empty swaps
-        in TRACE_IF_FALSE("wrong output", "5", (outputsAreValid payouts))
+        in traceIfFalse "wrong output" (outputsAreValid payouts)
+        && traceIfFalse "missing the marketplace signature" False
 -------------------------------------------------------------------------------
 -- Entry Points
 -------------------------------------------------------------------------------
