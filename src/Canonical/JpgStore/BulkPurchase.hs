@@ -354,6 +354,10 @@ validateOutputConstraints outputs constraints = all (\(addr, v) -> paidAtleastTo
 swapValidator :: SwapConfig -> BuiltinData -> Action -> SwapScriptContext -> Bool
 swapValidator SwapConfig {..} _ r SwapScriptContext{sScriptContextTxInfo = partialInfo@PartialSwapTxInfo{..}, sScriptContextPurpose = ASpending thisOutRef} =
   let
+    isSigner :: [PubKeyHash] -> PubKeyHash -> Bool
+    isSigner signers keyHash = case signers of
+      [] -> False
+      x : xs' -> if x == keyHash then True else isSigner xs' keyHash
 
     thisValidator :: ValidatorHash
     !thisValidator = ownHash' pTxInfoInputs thisOutRef
@@ -367,11 +371,6 @@ swapValidator SwapConfig {..} _ r SwapScriptContext{sScriptContextTxInfo = parti
     let
       scriptInputs :: [SwapTxInInfo]
       !scriptInputs = map convertToSwapInputs partialScriptInputs
-
-      singleSigner :: PubKeyHash
-      !singleSigner = case sTxInfoSignatories of
-        [x] -> x
-        _ -> TRACE_ERROR("single signer expected", "1")
 
       !SwapTxInfo{..} = convertToSwapTxInfo partialInfo
 
@@ -414,7 +413,7 @@ swapValidator SwapConfig {..} _ r SwapScriptContext{sScriptContextTxInfo = parti
       Cancel ->
         let
           signerIsOwner :: Swap -> Bool
-          signerIsOwner Swap{sOwner} = singleSigner == sOwner
+          signerIsOwner Swap{sOwner} = isSigner sTxInfoSignatories sOwner
         in TRACE_IF_FALSE("signer is not the owner", "4", (all signerIsOwner swaps))
 
       Accept ->
@@ -424,7 +423,7 @@ swapValidator SwapConfig {..} _ r SwapScriptContext{sScriptContextTxInfo = parti
         let
           accumPayouts :: Swap -> Map SwapAddress ExpectedValue -> Map SwapAddress ExpectedValue
           accumPayouts Swap{..} acc
-            | sOwner == singleSigner = acc
+            | isSigner sTxInfoSignatories sOwner = acc
             | otherwise = foldr mergePayouts acc sSwapPayouts
 
           -- assume all redeemers are accept, all the payouts should be paid (excpet those to the signer)
