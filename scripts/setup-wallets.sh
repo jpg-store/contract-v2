@@ -13,7 +13,7 @@ cardano-cli transaction build \
   --babbage-era \
   $BLOCKCHAIN \
   $(cardano-cli-balance-fixer input --address $senderAddr $BLOCKCHAIN ) \
-  --tx-out "$sellerAddr + 1500000000 lovelace" \
+  --tx-out "$sellerAddr + 1500000000 lovelace + 0 b8ef3bd94359209e2366a86fc71d7534ecdfa856d556259f4bde2c92.baba" \
   --change-address $senderAddr \
   --protocol-params-file temp/$BLOCKCHAIN_PREFIX/protocol-parameters.json \
   --out-file $bodyFile

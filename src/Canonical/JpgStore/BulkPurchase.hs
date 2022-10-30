@@ -18,8 +18,8 @@ module Canonical.JpgStore.BulkPurchase
 
 import Canonical.Shared
 import qualified Cardano.Api as Api
-import Cardano.Api.Shelley (PlutusScript(..), PlutusScriptV2)
-import Codec.Serialise (serialise)
+import           Cardano.Api.Shelley (PlutusScript(..), PlutusScriptV2)
+import           Codec.Serialise (serialise)
 import qualified Data.ByteString.Lazy as LB
 import qualified Data.ByteString.Short as SBS
 import           Plutus.V1.Ledger.Address
@@ -27,15 +27,15 @@ import           Plutus.V1.Ledger.Crypto
 import           Plutus.V2.Ledger.Contexts
 import           Plutus.V1.Ledger.Scripts
 import           Plutus.V2.Ledger.Tx
-import Plutus.V1.Ledger.Credential
-import Plutus.V1.Ledger.Value
-import PlutusTx
+import           Plutus.V1.Ledger.Credential
+import           Plutus.V1.Ledger.Value
+import           PlutusTx
 import qualified PlutusTx.AssocMap as M
-import PlutusTx.AssocMap (Map)
-import PlutusTx.Prelude
-import Prelude (IO, print, putStrLn)
-import System.FilePath
-import PlutusTx.These
+import           PlutusTx.AssocMap (Map)
+import           PlutusTx.Prelude
+import           Prelude (IO, print, putStrLn)
+import           System.FilePath
+import           PlutusTx.These
 import qualified Plutonomy
 
 #include "../DebugUtilities.h"
@@ -168,6 +168,20 @@ data SwapScriptContext = SwapScriptContext
   }
 
 type ExpectedValue = M.Map CurrencySymbol (Natural, M.Map TokenName WholeNumber)
+
+expectedLovelaces :: ExpectedValue -> Integer
+expectedLovelaces cm = case M.lookup adaSymbol cm of
+  Nothing -> 0
+  Just (Natural cc, tm) -> case M.lookup adaToken tm of
+    Nothing -> cc
+    Just (WholeNumber tc) -> tc + cc
+
+lovelaces :: Value -> Integer
+lovelaces (Value cm) = case M.lookup adaSymbol cm of
+  Nothing -> 0
+  Just tm -> case M.lookup adaToken tm of
+    Nothing -> 0
+    Just c  -> c
 
 {-# INLINABLE unionExpectedValue #-}
 unionExpectedValue :: ExpectedValue -> ExpectedValue -> ExpectedValue
@@ -308,6 +322,9 @@ paidAtleastTo outputs addr val = satisfyExpectations val (valuePaidTo' outputs a
 
 hasConfigNft :: CurrencySymbol -> TokenName -> SwapTxInInfo -> Bool
 hasConfigNft = error ()
+
+addrToPkh :: Address -> PubKeyHash
+addrToPkh = error ()
 -------------------------------------------------------------------------------
 -- Boilerplate
 -------------------------------------------------------------------------------
@@ -335,23 +352,12 @@ data NonEmptyAddress = NonEmptyAddress
 nonEmptyAddressToList :: NonEmptyAddress -> [Address]
 nonEmptyAddressToList (NonEmptyAddress x xs) = x : xs
 
-data NonEmptyPubKeyHash = NonEmptyPubKeyHash
-  { nepkhHead :: PubKeyHash
-  , nepkhTail :: [PubKeyHash]
-  }
-
-{-# INLINABLE nonEmptyPubKeyHashToList #-}
-nonEmptyPubKeyHashToList :: NonEmptyPubKeyHash -> [PubKeyHash]
-nonEmptyPubKeyHashToList (NonEmptyPubKeyHash x xs) = x : xs
-
 data SwapDynamicConfig = SwapDynamicConfig
   { sdcValidOutputAddresses :: NonEmptyAddress
-  -- ^ change this to addresses
-  , sdcMarketplacePkhs :: NonEmptyPubKeyHash
+  , sdcMarketplaceAddresses :: NonEmptyAddress
   }
 
 unstableMakeIsData ''NonEmptyAddress
-unstableMakeIsData ''NonEmptyPubKeyHash
 unstableMakeIsData ''SwapDynamicConfig
 unstableMakeIsData ''Payout
 unstableMakeIsData ''Swap
@@ -407,8 +413,8 @@ swapValidator SwapConfig {..} _ r SwapScriptContext{sScriptContextTxInfo = parti
         [x] -> lookupSwapDynamicConfigDatum x
         _ -> traceError "missing or wrong number of swap config reference inputs!"
 
-      lookupSwapDatum :: SwapTxInInfo -> Swap
-      lookupSwapDatum SwapTxInInfo { sTxInInfoResolved = SwapTxOut {sTxOutDatum = theOutDatum}} =
+      lookupSwapDatum :: OutputDatum -> Swap
+      lookupSwapDatum theOutDatum =
         let Datum d = case theOutDatum of
               OutputDatum a -> a
               OutputDatumHash dh -> go (M.toList sTxInfoData) where
@@ -418,8 +424,8 @@ swapValidator SwapConfig {..} _ r SwapScriptContext{sScriptContextTxInfo = parti
               NoOutputDatum -> TRACE_ERROR("The impossible happened", "7")
         in FROM_BUILT_IN_DATA("lookupDatum datum conversion failed", "2", d, Swap)
 
-      swaps :: [Swap]
-      swaps = case map (\i -> lookupSwapDatum i) scriptInputs of
+      swaps :: [(Swap, Value)]
+      swaps = case map (\SwapTxInInfo { sTxInInfoResolved = SwapTxOut {sTxOutDatum, sTxOutValue}} -> (lookupSwapDatum sTxOutDatum, sTxOutValue)) scriptInputs of
         [] -> TRACE_ERROR("The impossible happened", "6")
         xs -> xs
 
@@ -454,29 +460,56 @@ swapValidator SwapConfig {..} _ r SwapScriptContext{sScriptContextTxInfo = parti
           outputAddressesAreValid :: Bool
           outputAddressesAreValid = validOutputsValue `geq` allScriptValue
 
-        in traceIfFalse "signer is not the owner" (all signerIsOwner swaps)
+        in traceIfFalse "signer is not the owner" (all (signerIsOwner . fst) swaps)
         && traceIfFalse "wrong output address" outputAddressesAreValid
 
       Accept ->
         -- Acts like a buy, but we ignore any payouts that go to the signer of the
         -- transaction. This allows the seller to accept an offer from a buyer that
         -- does not pay the seller as much as they requested
-        -- TODO add the marketplace payout
+        -- Determining the total sale ada is tricky, because users could cancel their
+        -- listing while accepting another users offer.
+        -- To handle these cases, we sum the payout ada and the total script input
+        -- ada of all the inputs the signing user does not own, and then take the
+        -- max of the two.
         let
-          accumPayouts :: Swap -> Map Address ExpectedValue -> Map Address ExpectedValue
-          accumPayouts Swap{..} acc
+          accumPayouts :: (Swap, Value) -> (Map Address ExpectedValue, Integer, Integer) -> (Map Address ExpectedValue, Integer, Integer)
+          accumPayouts (Swap{..}, v) acc@(payoutMap, theTotalPayoutAda, theTotalScriptAda)
             | isSigner sTxInfoSignatories sOwner = acc
-            | otherwise = foldr mergePayouts acc sSwapPayouts
+            | otherwise =
+                ( foldr mergePayouts payoutMap sSwapPayouts
+                , foldr (\Payout {pValue} theAda -> theAda + expectedLovelaces pValue) theTotalPayoutAda sSwapPayouts
+                , theTotalScriptAda + lovelaces v
+                )
 
           -- assume all redeemers are accept, all the payouts should be paid (excpet those to the signer)
           payouts :: Map Address ExpectedValue
-          !payouts = foldr accumPayouts M.empty swaps
+          totalPayoutAda :: Integer
+          totalScriptAda :: Integer
+
+          (!payouts, !totalPayoutAda, !totalScriptAda) =
+            foldr accumPayouts (M.empty, 0, 0) swaps
+
+          saleAda :: Integer
+          !saleAda = max totalPayoutAda totalScriptAda
+
+          expectedMarketplaceValue :: ExpectedValue
+          !expectedMarketplaceValue =
+            M.singleton
+              adaSymbol
+              ( Natural 0
+              , M.singleton adaToken (WholeNumber (min 1 ((1000 * saleAda) `divide` scMarketplaceFee)))
+              )
+
+          -- We assume there are not other marketplace payouts
+          finalPayouts :: Map Address ExpectedValue
+          !finalPayouts = M.insert (neaHead sdcMarketplaceAddresses) expectedMarketplaceValue payouts
 
           marketPlaceSigned :: Bool
           !marketPlaceSigned =
-            any (\x -> any (x==) (nonEmptyPubKeyHashToList sdcMarketplacePkhs)) sTxInfoSignatories
+            any (\x -> any (\addr -> x == addrToPkh addr) (nonEmptyAddressToList sdcMarketplaceAddresses)) sTxInfoSignatories
 
-        in traceIfFalse "wrong output" (outputsAreValid payouts)
+        in traceIfFalse "wrong output" (outputsAreValid finalPayouts)
         && traceIfFalse "missing the marketplace signature" marketPlaceSigned
 -------------------------------------------------------------------------------
 -- Entry Points

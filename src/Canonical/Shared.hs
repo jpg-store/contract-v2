@@ -23,8 +23,6 @@ data SwapConfig = SwapConfig
 -- TODO
 -- Specialize to work around compliation issue
 
-
-
 data Bid = Bid
   { bidBidder         :: PubKeyHash
   , bidAmount         :: Integer
