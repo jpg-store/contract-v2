@@ -5,7 +5,6 @@ module Canonical.JpgStore.BulkPurchase
   , Payout(..)
   , Action(..)
   , Swap(..)
-  , Address(..)
   , WholeNumber(..)
   , swap
   , writePlutusFile
@@ -321,10 +320,12 @@ paidAtleastTo :: [SwapTxOut] -> Address -> ExpectedValue -> Bool
 paidAtleastTo outputs addr val = satisfyExpectations val (valuePaidTo' outputs addr)
 
 hasConfigNft :: CurrencySymbol -> TokenName -> SwapTxInInfo -> Bool
-hasConfigNft = error ()
+hasConfigNft cs t SwapTxInInfo { sTxInInfoResolved = SwapTxOut { sTxOutValue = Value v }} = case M.lookup cs v of
+  Nothing -> False
+  Just m  -> case M.lookup t m of
+    Nothing -> False
+    Just c  -> c == 1
 
-addrToPkh :: Address -> PubKeyHash
-addrToPkh = error ()
 -------------------------------------------------------------------------------
 -- Boilerplate
 -------------------------------------------------------------------------------
@@ -343,21 +344,45 @@ instance Eq Action where
     (Accept, Accept) -> True
     (Accept, _) -> False
 
+
 data NonEmptyAddress = NonEmptyAddress
   { neaHead :: Address
-  , nealTail :: [Address]
+  , neaTail :: [Address]
   }
 
 {-# INLINABLE nonEmptyAddressToList #-}
 nonEmptyAddressToList :: NonEmptyAddress -> [Address]
 nonEmptyAddressToList (NonEmptyAddress x xs) = x : xs
 
+data PaymentAddress = PaymentAddress
+  { paPubKeyHash        :: PubKeyHash
+  , paStakingCredential :: Maybe StakingCredential
+  }
+
+paymentAddressToAddress :: PaymentAddress -> Address
+paymentAddressToAddress PaymentAddress {..} = Address
+  { addressCredential        = PubKeyCredential paPubKeyHash
+  , addressStakingCredential = paStakingCredential
+  }
+
+data NonEmptyPaymentAddress = NonEmptyPaymentAddress
+  { nepaHead :: PaymentAddress
+  , nepaTail :: [PaymentAddress]
+  }
+
+{-# INLINABLE nonEmptyPaymentAddressToList #-}
+nonEmptyPaymentAddressToList :: NonEmptyPaymentAddress -> [PaymentAddress]
+nonEmptyPaymentAddressToList (NonEmptyPaymentAddress x xs) = x : xs
+
 data SwapDynamicConfig = SwapDynamicConfig
   { sdcValidOutputAddresses :: NonEmptyAddress
-  , sdcMarketplaceAddresses :: NonEmptyAddress
+  -- ^ change this to addresses
+  , sdcMarketplaceAddresses :: NonEmptyPaymentAddress
   }
 
 unstableMakeIsData ''NonEmptyAddress
+unstableMakeIsData ''PaymentAddress
+unstableMakeIsData ''NonEmptyPaymentAddress
 unstableMakeIsData ''SwapDynamicConfig
 unstableMakeIsData ''Payout
 unstableMakeIsData ''Swap
@@ -425,7 +450,7 @@ swapValidator SwapConfig {..} _ r SwapScriptContext{sScriptContextTxInfo = parti
         in FROM_BUILT_IN_DATA("lookupDatum datum conversion failed", "2", d, Swap)
 
       swaps :: [(Swap, Value)]
-      swaps = case map (\SwapTxInInfo { sTxInInfoResolved = SwapTxOut {sTxOutDatum, sTxOutValue}} -> (lookupSwapDatum sTxOutDatum, sTxOutValue)) scriptInputs of
+      !swaps = case map (\SwapTxInInfo { sTxInInfoResolved = SwapTxOut {sTxOutDatum, sTxOutValue}} -> (lookupSwapDatum sTxOutDatum, sTxOutValue)) scriptInputs of
         [] -> TRACE_ERROR("The impossible happened", "6")
         xs -> xs
 
@@ -450,7 +475,7 @@ swapValidator SwapConfig {..} _ r SwapScriptContext{sScriptContextTxInfo = parti
           isValidOutput address = any (address==) (nonEmptyAddressToList sdcValidOutputAddresses)
 
           validOutputsValue :: Value
-          validOutputsValue =
+          !validOutputsValue =
             foldr (\SwapTxOut {sTxOutValue, sTxOutAddress} acc ->
                     if isValidOutput sTxOutAddress then sTxOutValue <> acc else acc
                   )
@@ -458,7 +483,7 @@ swapValidator SwapConfig {..} _ r SwapScriptContext{sScriptContextTxInfo = parti
                   sTxInfoOutputs
 
           outputAddressesAreValid :: Bool
-          outputAddressesAreValid = validOutputsValue `geq` allScriptValue
+          !outputAddressesAreValid = validOutputsValue `geq` allScriptValue
 
         in traceIfFalse "signer is not the owner" (all (signerIsOwner . fst) swaps)
         && traceIfFalse "wrong output address" outputAddressesAreValid
@@ -503,11 +528,11 @@ swapValidator SwapConfig {..} _ r SwapScriptContext{sScriptContextTxInfo = parti
 
           -- We assume there are not other marketplace payouts
           finalPayouts :: Map Address ExpectedValue
-          !finalPayouts = M.insert (neaHead sdcMarketplaceAddresses) expectedMarketplaceValue payouts
+          !finalPayouts = M.insert (paymentAddressToAddress (nepaHead sdcMarketplaceAddresses)) expectedMarketplaceValue payouts
 
           marketPlaceSigned :: Bool
           !marketPlaceSigned =
-            any (\x -> any (\addr -> x == addrToPkh addr) (nonEmptyAddressToList sdcMarketplaceAddresses)) sTxInfoSignatories
+            any (\x -> any (\addr -> x == paPubKeyHash addr) (nonEmptyPaymentAddressToList sdcMarketplaceAddresses)) sTxInfoSignatories
 
         in traceIfFalse "wrong output" (outputsAreValid finalPayouts)
         && traceIfFalse "missing the marketplace signature" marketPlaceSigned

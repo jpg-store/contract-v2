@@ -9,6 +9,8 @@ import           Plutus.V2.Ledger.Contexts
 import           Plutus.V1.Ledger.Scripts
 import           Plutus.V2.Ledger.Tx
 import           Plutus.V1.Ledger.Address
+import           Plutus.V1.Ledger.Crypto
+import           Plutus.V1.Ledger.Credential
 import Plutus.V1.Ledger.Value
 import PlutusTx
 import qualified PlutusTx.AssocMap as M
@@ -25,20 +27,36 @@ data NftConfig = NftConfig
 
 data NonEmptyAddress = NonEmptyAddress
   { neaHead :: Address
-  , nealTail :: [Address]
+  , neaTail :: [Address]
   }
 
 {-# INLINABLE nonEmptyAddressToList #-}
 nonEmptyAddressToList :: NonEmptyAddress -> [Address]
 nonEmptyAddressToList (NonEmptyAddress x xs) = x : xs
 
+data PaymentAddress = PaymentAddress
+  { paPubKeyHash        :: PubKeyHash
+  , paStakingCredential :: Maybe StakingCredential
+  }
+
+data NonEmptyPaymentAddress = NonEmptyPaymentAddress
+  { nepaHead :: PaymentAddress
+  , nepaTail :: [PaymentAddress]
+  }
+
+{-# INLINABLE nonEmptyPaymentAddressToList #-}
+nonEmptyPaymentAddressToList :: NonEmptyPaymentAddress -> [PaymentAddress]
+nonEmptyPaymentAddressToList (NonEmptyPaymentAddress x xs) = x : xs
+
 data SwapDynamicConfig = SwapDynamicConfig
   { sdcValidOutputAddresses :: NonEmptyAddress
   -- ^ change this to addresses
-  , sdcMarketplaceAddresses :: NonEmptyAddress
+  , sdcMarketplaceAddresses :: NonEmptyPaymentAddress
   }
 
 unstableMakeIsData ''NonEmptyAddress
+unstableMakeIsData ''PaymentAddress
+unstableMakeIsData ''NonEmptyPaymentAddress
 unstableMakeIsData ''SwapDynamicConfig
 makeLift ''NftConfig
 
