@@ -233,6 +233,11 @@ runTests config@Config{..} resources@AllResources
 
     it "can be cancelled by owner" $ \swaps -> evalCancelSwaps config resources swaps seller1
 
+    it "can be updated by owner" $ \swaps -> evalCancelUpdateSwaps config resources swaps seller1
+
+    it "can't be cancelled and sent anywhere" $ \swaps ->
+      evalCancelWrongAddressSwaps config resources swaps seller1 `shouldThrow` isEvalException
+
     context "buyer counter offers" $ do
       aroundWith (createCounterOffer config innerResources) $ do
         it "seller can accept offer"
@@ -721,7 +726,60 @@ evalCancelSwaps config@Config {..} AllResources
 
   waitForNextBlock cTestnetMagic
 
--- The problem
+evalCancelWrongAddressSwaps :: Config -> AllResources -> [SwapAndDatum] -> SelectWallet -> IO ()
+evalCancelWrongAddressSwaps config@Config {..} AllResources
+  { arResources = Resources {..}
+  , arConfigNft
+  } swaps canceller = do
+  let
+    Wallet {walletAddr = theWalletAddr, walletSkeyPath} = canceller rWallets
+    evalConfig = mempty { ecTestnet = cTestnetMagic
+                        , ecProtocolParams = cProtocolParams
+                        , ecUseRequiredSigners = True
+                        }
+
+    outputAddr = walletAddr $ marketplace rWallets
+
+  void $ eval evalConfig $ do
+    void $ forScriptInputs config swaps $ \(s, _) utxo -> scriptInput utxo cPlutusScript s Cancel
+    (cin, _) <- selectCollateralInput theWalletAddr
+    input . iUtxo $ cin
+
+    readOnlyInput arConfigNft
+    void $ output outputAddr ("15000000 lovelace")
+    void $ balanceNonAdaAssets outputAddr
+    changeAddress outputAddr
+    sign walletSkeyPath
+
+  waitForNextBlock cTestnetMagic
+
+evalCancelUpdateSwaps :: Config -> AllResources -> [SwapAndDatum] -> SelectWallet -> IO ()
+evalCancelUpdateSwaps config@Config {..} AllResources
+  { arResources = Resources {..}
+  , arConfigNft
+  } swaps canceller = do
+  let
+    Wallet {..} = canceller rWallets
+    evalConfig = mempty { ecTestnet = cTestnetMagic
+                        , ecProtocolParams = cProtocolParams
+                        , ecUseRequiredSigners = True
+                        }
+
+  void $ eval evalConfig $ do
+    void $ forScriptInputs config swaps $ \(s, _) utxo -> do
+      scriptInput utxo cPlutusScript s Cancel
+      outputWithHash cScriptAddr (utxoValue utxo) s
+
+    (cin, _) <- selectCollateralInput walletAddr
+    input . iUtxo $ cin
+
+    readOnlyInput arConfigNft
+
+    void $ balanceNonAdaAssets walletAddr
+    changeAddress walletAddr
+    sign walletSkeyPath
+
+  waitForNextBlock cTestnetMagic
 
 makeScriptInputs :: Config -> [SwapAndDatum] -> Tx [(Swap, Value.Value, UTxO)]
 makeScriptInputs Config {..} swaps = do
