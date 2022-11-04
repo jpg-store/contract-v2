@@ -244,9 +244,7 @@ runTests config@Config{..} resources@AllResources
     context "buyer counter offers" $ do
       aroundWith (createCounterOffer config innerResources) $ do
         it "seller can accept offer"
-          $ \(swaps, offer) -> evalAccept config resources (head swaps) offer
-
-
+          $ \(swaps, offer) -> evalAccept config resources (head swaps) offer 888_000
 
   describe "multiple offers" $ do
     context "from same seller" $ do
@@ -311,7 +309,7 @@ runTests config@Config{..} resources@AllResources
           , swapSpec seller1 policy2
           , swapSpec seller1 policy3
           , swapSpec seller1 policy4
-          -- , swapSpec seller2 policy1
+          , swapSpec seller2 policy1
           -- , swapSpec seller2 policy2
           -- , swapSpec seller2 policy3
           -- , swapSpec seller2 policy4
@@ -519,13 +517,13 @@ createScriptReference Config {..} Resources {..} = do
   waitForNextBlock cTestnetMagic
 
 
-evalAccept :: Config -> AllResources -> SwapAndDatum -> SwapAndDatum -> IO ()
+evalAccept :: Config -> AllResources -> SwapAndDatum -> SwapAndDatum -> Integer -> IO ()
 evalAccept config@Config {..} AllResources
   { arResources = Resources {..}
   , arConfigNft
-  } theSwap offer = do
+  } theSwap offer marketplaceFee = do
   let
-    marketplacePayout = Payout (toSwapAddress $ fromString . walletPkh . marketplace $ rWallets) (valueToExpectedValue $ lovelaceValueOf 1000000)
+    marketplacePayout = Payout (toSwapAddress $ fromString . walletPkh . marketplace $ rWallets) (valueToExpectedValue $ lovelaceValueOf marketplaceFee)
     sellerPkh = sOwner . sadSwap $ theSwap
     sellerWallet = lookupWallet (toSwapAddress sellerPkh) rWallets
     sellerAddr = walletAddr sellerWallet
@@ -941,7 +939,7 @@ createCounterOffer Config {..} Resources { rWallets } runTest swaps = do
     Wallet {..} = buyer rWallets
     buyerPkh = fromString walletPkh
     buyerPayout = Payout (toSwapAddress buyerPkh) $ valueToExpectedValue sadValue
-    offerValue = lovelaceValueOf 1500000
+    offerValue = lovelaceValueOf 8_000_000
     txOfferValue = toTxValue offerValue
     offerDatum = Swap buyerPkh [buyerPayout]
 
