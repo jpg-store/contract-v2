@@ -525,7 +525,7 @@ swapValidator SwapConfig {..} _ r SwapScriptContext{sScriptContextTxInfo = parti
             M.singleton
               adaSymbol
               ( Natural 0
-              , M.singleton adaToken (WholeNumber (min 1 ((((1_000_000 * saleAda) `divide` (1000 - scMarketplaceFee))) `divide` scMarketplaceFee)))
+              , M.singleton adaToken (WholeNumber (max 1 ((saleAda * scMarketplaceFee) `divide` 1000)))
               )
 
           -- We assume there are not other marketplace payouts

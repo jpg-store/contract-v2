@@ -1031,7 +1031,7 @@ withPlutusFile testnetMagic wallets nftTokenName runTest = withSystemTempFile "n
   writeFile policyIdFp $ show theNftPolicyId
 
   let swapConfig = SwapConfig
-        { scMarketplaceFee    = 100
+        { scMarketplaceFee    = 111
         , scConfigNftPolicyId = theNftPolicyId
         , scConfigNftTokenName = nftTokenName
         }

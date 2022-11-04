@@ -60,9 +60,9 @@ run Options {..} = do
   writeFile nftPolicyIdOutput $ show theNftPolicyId
 
   let swapConfig = SwapConfig
-        { scMarketplaceFee    = marketPlaceFee
-        , scConfigNftPolicyId = theNftPolicyId
-        , scConfigNftTokenName = nftTokenName
+        { scMarketplaceFee        = marketPlaceFee
+        , scConfigNftPolicyId     = theNftPolicyId
+        , scConfigNftTokenName    = nftTokenName
         }
 
   writePlutusFile swapConfig swapOutput

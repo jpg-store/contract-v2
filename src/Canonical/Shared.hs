@@ -15,9 +15,9 @@ import qualified PlutusTx.AssocMap as M
 #include "DebugUtilities.h"
 
 data SwapConfig = SwapConfig
-  { scMarketplaceFee     :: Integer
-  , scConfigNftPolicyId  :: CurrencySymbol
-  , scConfigNftTokenName :: TokenName
+  { scMarketplaceFee        :: Integer
+  , scConfigNftPolicyId     :: CurrencySymbol
+  , scConfigNftTokenName    :: TokenName
   }
 
 -- TODO
