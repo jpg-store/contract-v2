@@ -228,6 +228,9 @@ runTests config@Config{..} resources@AllResources
   before (createSwaps config innerResources [swapSpec seller1 policy1]) $ do
     it "can be purchased" $ \swaps -> evalAccepts config resources swaps buyer
 
+    it "can't be purchased without a marketplace signature"
+      $ \swaps -> evalAcceptNoSignature config resources swaps buyer `shouldThrow` isEvalException
+
     it "can be cancelled by owner" $ \swaps -> evalCancelSwaps config resources swaps seller1
 
     context "buyer counter offers" $ do
@@ -298,8 +301,8 @@ runTests config@Config{..} resources@AllResources
         before (createSwaps config innerResources
           [ swapSpec seller1 policy1
           , swapSpec seller1 policy2
-          -- , swapSpec seller1 policy3
-          -- , swapSpec seller1 policy4
+          , swapSpec seller1 policy3
+          , swapSpec seller1 policy4
           -- , swapSpec seller2 policy1
           -- , swapSpec seller2 policy2
           -- , swapSpec seller2 policy3
@@ -597,6 +600,51 @@ evalAccepts config@Config {..} AllResources
     changeAddress buyerAddr
     sign . walletSkeyPath . buyerW $ rWallets
     sign . walletSkeyPath . marketplace $ rWallets
+
+  waitForNextBlock cTestnetMagic
+
+evalAcceptNoSignature :: Config -> AllResources -> [SwapAndDatum] -> SelectWallet -> IO ()
+evalAcceptNoSignature config@Config {..} AllResources
+  { arResources = Resources {..}
+  , arScriptUtxos
+  , arConfigNft
+  } swaps buyerW = do
+  let
+    marketplacePayout = Payout (toSwapAddress $ fromString . walletPkh . marketplace $ rWallets) (valueToExpectedValue $ lovelaceValueOf 1000000)
+    buyerAddr = walletAddr . buyerW $ rWallets
+    mergePayouts = fmap (uncurry Payout) . Map.toList . foldr (Map.unionWith unionExpectedValue) Map.empty . fmap
+      (\Payout {..} -> Map.singleton pAddress pValue)
+    evalConfig =
+      EvalConfig { ecOutputDir = Nothing -- Just "temp/cbor"
+                 , ecTestnet = cTestnetMagic
+                 , ecProtocolParams = cProtocolParams
+                 , ecUseRequiredSigners = True
+                 }
+  void $ eval evalConfig $ do
+    swapUtxos <- makeScriptInputs config swaps
+    let swapsAndReferenceUtxos = zip swapUtxos arScriptUtxos
+    (payouts, assets) <-
+      fmap (bimap (mergePayouts . mconcat) (toTxValue . mconcat) . unzip) . forM swapsAndReferenceUtxos $ \((s, v, inputUtxo), referenceUtxo) -> do
+        scriptReferenceV2Input inputUtxo referenceUtxo s Accept Nothing
+        pure (sSwapPayouts s, v)
+
+    void $ output buyerAddr (assets <> "3000000 lovelace")
+
+    payoutTotal <- fmap mconcat . for (marketplacePayout : payouts) $ \Payout {..} ->
+      let txValue = toTxValue (expectedValueToValue pValue)
+      in txValue <$ output (lookupWalletAddr pAddress rWallets) txValue
+
+    void $ selectInputs payoutTotal buyerAddr
+
+    readOnlyInput arConfigNft
+
+    void $ selectCollateralInput buyerAddr
+    void $ balanceNonAdaAssets buyerAddr
+
+    start <- currentSlot
+    timerange start (start + 100)
+    changeAddress buyerAddr
+    sign . walletSkeyPath . buyerW $ rWallets
 
   waitForNextBlock cTestnetMagic
 
