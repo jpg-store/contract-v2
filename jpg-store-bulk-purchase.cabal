@@ -21,6 +21,20 @@ common lang
     GeneralizedNewtypeDeriving
     OverloadedStrings
     StandaloneDeriving
+    MultiParamTypeClasses
+    RecordWildCards
+    CPP
+    LambdaCase
+    NamedFieldPuns
+    TemplateHaskell
+    QuasiQuotes
+    ScopedTypeVariables
+    BangPatterns
+    DataKinds
+    DerivingStrategies
+    DeriveGeneric
+    DeriveAnyClass
+    NumericUnderscores
   ghc-options:
     -Wall -Wnoncanonical-monad-instances -Wincomplete-uni-patterns
     -Wincomplete-record-updates -Wredundant-constraints -Widentities
@@ -36,6 +50,7 @@ library
   exposed-modules:
     Canonical.JpgStore.BulkPurchase
     Canonical.Shared
+    Canonical.JpgStore.NftMinter
 
   build-depends:
     , aeson
@@ -63,7 +78,7 @@ executable create-smart-contract
     , cardano-api
     , cardano-ledger-alonzo
     , jpg-store-bulk-purchase
-    , optparse-applicative
+    , optparse-generic
     , plutus-ledger-api
 
 test-suite integration-tests
@@ -86,6 +101,8 @@ test-suite integration-tests
     , filepath
     , hspec
     , jpg-store-bulk-purchase
+    , lens
+    , lens-aeson
     , managed
     , mtl
     , plutus-core

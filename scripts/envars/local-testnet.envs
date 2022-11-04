@@ -1,5 +1,7 @@
 export CARDANO_NODE_SOCKET_PATH="/Users/jonathanfischoff/prototypes/cardano-node/example/node-spo1/node.sock"
-export SOURCE_WALLET_ADDRESS_PATH=$(cardano-cli address build --testnet-magic "42" --payment-verification-key-file /Users/jonathanfischoff/prototypes/cardano-node/example/stake-delegator-keys/payment1.vkey --stake-verification-key-file /Users/jonathanfischoff/prototypes/cardano-node/example/stake-delegator-keys/staking1.vkey)
-export SOURCE_WALLET_SKEY_PATH=/Users/jonathanfischoff/prototypes/cardano-node/example/stake-delegator-keys/payment1.skey
+export BLOCKCHAIN="--testnet-magic 42"
+export BLOCKCHAIN_PREFIX=local-testnet
+export SOURCE_WALLET_ADDRESS_PATH=$(cardano-cli address build --testnet-magic "42" --payment-verification-key-file /Users/jonathanfischoff/prototypes/cardano-node/example/utxo-keys/utxo1.vkey)
+export SOURCE_WALLET_SKEY_PATH=/Users/jonathanfischoff/prototypes/cardano-node/example/utxo-keys/utxo1.skey
 export TESTNET_MAGIC=42
 export WALLET_DIR=$PWD/temp/private-testnet
