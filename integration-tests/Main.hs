@@ -226,7 +226,7 @@ runTests config@Config{..} resources@AllResources
       waitForNextBlock cTestnetMagic
 
   before (createSwaps config innerResources [swapSpec seller1 policy1]) $ do
-    it "can be purchased" $ \swaps -> evalAccepts config resources swaps buyer
+    it "can be purchased" $ \swaps -> evalAccepts config resources swaps 1_000_000 buyer
 
     it "can't be purchased if the fee is low"
       $ \swaps -> evalAcceptsLowFee config resources swaps buyer `shouldThrow` isEvalException
@@ -259,7 +259,7 @@ runTests config@Config{..} resources@AllResources
           it "cannot be shorted" $ \swaps -> do
             let
               buyerAddr = walletAddr $ buyer rWallets
-              marketplacePayout = Payout (toSwapAddress $ fromString . walletPkh . marketplace $ rWallets) (valueToExpectedValue $ lovelaceValueOf 1000000)
+              marketplacePayout = Payout (toSwapAddress $ fromString . walletPkh . marketplace $ rWallets) (valueToExpectedValue $ lovelaceValueOf 2000000)
               evalConfig =
                 EvalConfig
                   { ecOutputDir = Nothing
@@ -301,7 +301,7 @@ runTests config@Config{..} resources@AllResources
             evalCancelSwaps config resources swaps seller1 `shouldThrow` isEvalException
 
           it "can be purchased in bulk" $ \swaps -> do
-            evalAccepts config resources swaps buyer
+            evalAccepts config resources swaps 2_000_000 buyer
 
           it "Can't be purchased if another script is an input" $ \swaps -> do
             evalAcceptsWithAlwaysSucceeds config resources swaps buyer `shouldThrow` isEvalException
@@ -317,7 +317,7 @@ runTests config@Config{..} resources@AllResources
           -- , swapSpec seller2 policy4
           ]) $ do
           it "can be really purchased in bulk upto 3" $ \swaps -> do
-            evalAccepts config resources swaps buyer
+            evalAccepts config resources swaps 4_000_000 buyer
 
 main :: IO ()
 main = do
@@ -612,15 +612,15 @@ evalAcceptsLowFee config@Config {..} AllResources
 
   waitForNextBlock cTestnetMagic
 
-evalAccepts :: Config -> AllResources -> [SwapAndDatum] -> SelectWallet -> IO ()
+evalAccepts :: Config -> AllResources -> [SwapAndDatum] -> Integer -> SelectWallet -> IO ()
 evalAccepts config@Config {..} AllResources
   { arResources = Resources {..}
   , arScriptUtxos
   , arConfigNft
-  } swaps buyerW = do
+  } swaps marketplaceAmount buyerW = do
   let
     -- this is wrong. I need to calculate one per swap
-    marketplacePayout = Payout (toSwapAddress $ fromString . walletPkh . marketplace $ rWallets) (valueToExpectedValue $ lovelaceValueOf 1000000)
+    marketplacePayout = Payout (toSwapAddress $ fromString . walletPkh . marketplace $ rWallets) (valueToExpectedValue $ lovelaceValueOf marketplaceAmount)
     buyerAddr = walletAddr . buyerW $ rWallets
     mergePayouts = fmap (uncurry Payout) . Map.toList . foldr (Map.unionWith unionExpectedValue) Map.empty . fmap
       (\Payout {..} -> Map.singleton pAddress pValue)
