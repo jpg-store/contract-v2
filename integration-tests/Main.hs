@@ -228,6 +228,9 @@ runTests config@Config{..} resources@AllResources
   before (createSwaps config innerResources [swapSpec seller1 policy1]) $ do
     it "can be purchased" $ \swaps -> evalAccepts config resources swaps buyer
 
+    it "can't be purchased if the fee is low"
+      $ \swaps -> evalAcceptsLowFee config resources swaps buyer `shouldThrow` isEvalException
+
     it "can't be purchased without a marketplace signature"
       $ \swaps -> evalAcceptNoSignature config resources swaps buyer `shouldThrow` isEvalException
 
@@ -562,6 +565,53 @@ evalAccept config@Config {..} AllResources
 
   waitForNextBlock cTestnetMagic
 
+evalAcceptsLowFee :: Config -> AllResources -> [SwapAndDatum] -> SelectWallet -> IO ()
+evalAcceptsLowFee config@Config {..} AllResources
+  { arResources = Resources {..}
+  , arScriptUtxos
+  , arConfigNft
+  } swaps buyerW = do
+  let
+    -- this is wrong. I need to calculate one per swap
+    marketplacePayout = Payout (toSwapAddress $ fromString . walletPkh . marketplace $ rWallets) (valueToExpectedValue $ lovelaceValueOf 900000)
+    buyerAddr = walletAddr . buyerW $ rWallets
+    mergePayouts = fmap (uncurry Payout) . Map.toList . foldr (Map.unionWith unionExpectedValue) Map.empty . fmap
+      (\Payout {..} -> Map.singleton pAddress pValue)
+    evalConfig =
+      EvalConfig { ecOutputDir = Nothing -- Just "temp/cbor"
+                 , ecTestnet = cTestnetMagic
+                 , ecProtocolParams = cProtocolParams
+                 , ecUseRequiredSigners = True
+                 }
+  void $ eval evalConfig $ do
+    swapUtxos <- makeScriptInputs config swaps
+    let swapsAndReferenceUtxos = zip swapUtxos arScriptUtxos
+    (payouts, assets) <-
+      fmap (bimap (mergePayouts . mconcat) (toTxValue . mconcat) . unzip) . forM swapsAndReferenceUtxos $ \((s, v, inputUtxo), referenceUtxo) -> do
+        scriptReferenceV2Input inputUtxo referenceUtxo s Accept Nothing
+        pure (sSwapPayouts s, v)
+
+    void $ output buyerAddr (assets <> "3000000 lovelace")
+
+    payoutTotal <- fmap mconcat . for (marketplacePayout : payouts) $ \Payout {..} ->
+      let txValue = toTxValue (expectedValueToValue pValue)
+      in txValue <$ output (lookupWalletAddr pAddress rWallets) txValue
+
+    void $ selectInputs payoutTotal buyerAddr
+
+    readOnlyInput arConfigNft
+
+    void $ selectCollateralInput buyerAddr
+    void $ balanceNonAdaAssets buyerAddr
+
+    start <- currentSlot
+    timerange start (start + 100)
+    changeAddress buyerAddr
+    sign . walletSkeyPath . buyerW $ rWallets
+    sign . walletSkeyPath . marketplace $ rWallets
+
+  waitForNextBlock cTestnetMagic
+
 evalAccepts :: Config -> AllResources -> [SwapAndDatum] -> SelectWallet -> IO ()
 evalAccepts config@Config {..} AllResources
   { arResources = Resources {..}
@@ -569,6 +619,7 @@ evalAccepts config@Config {..} AllResources
   , arConfigNft
   } swaps buyerW = do
   let
+    -- this is wrong. I need to calculate one per swap
     marketplacePayout = Payout (toSwapAddress $ fromString . walletPkh . marketplace $ rWallets) (valueToExpectedValue $ lovelaceValueOf 1000000)
     buyerAddr = walletAddr . buyerW $ rWallets
     mergePayouts = fmap (uncurry Payout) . Map.toList . foldr (Map.unionWith unionExpectedValue) Map.empty . fmap
@@ -980,7 +1031,7 @@ withPlutusFile testnetMagic wallets nftTokenName runTest = withSystemTempFile "n
   writeFile policyIdFp $ show theNftPolicyId
 
   let swapConfig = SwapConfig
-        { scMarketplaceFee    = 25
+        { scMarketplaceFee    = 100
         , scConfigNftPolicyId = theNftPolicyId
         , scConfigNftTokenName = nftTokenName
         }
