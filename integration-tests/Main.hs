@@ -18,6 +18,8 @@ import Control.Monad.Managed
 import Control.Monad.State
 import Data.Aeson as Aeson
 import Data.Aeson.Types as Aeson
+import Control.Lens ((^?))
+import Data.Aeson.Lens (key, _String)
 import Data.Bifunctor
 import Data.Foldable
 import Data.List.Extra
@@ -42,6 +44,7 @@ import Test.Hspec
 import qualified PlutusTx.Functor as P
 import qualified PlutusTx.Prelude as P
 import qualified PlutusTx.AssocMap as M
+import qualified Data.ByteString.Lazy.Char8 as BSLC
 
 import Canonical.JpgStore.BulkPurchase
 import qualified Canonical.JpgStore.NftMinter as NftMinter
@@ -72,9 +75,13 @@ data Config = Config
   , cTestnetMagic :: Maybe Integer
   , cProtocolParams :: Maybe FilePath
   , cPlutusScript :: FilePath
+  , cScriptPkh :: String
   , cScriptAddr :: TxBuilder.Address
   , cAlwaysSucceedScript :: FilePath
   , cAlwaysSucceedAddr :: TxBuilder.Address
+  , cNftTokenName :: String
+  , cNftPolicyId :: String
+  , cNftPlutus :: FilePath
   }
 
 data SwapAndDatum = SwapAndDatum
@@ -103,6 +110,7 @@ data Wallets = Wallets
   , marketplace :: Wallet
   , royalties :: Wallet
   , scriptReference :: Wallet
+  , configNft :: Wallet
   }
   deriving Show
 
@@ -121,6 +129,7 @@ data Resources = Resources
 data AllResources = AllResources
   { arResources :: Resources
   , arScriptUtxos :: [UTxO]
+  , arConfigNft :: UTxO
   }
 
 type SelectWallet = Wallets -> Wallet
@@ -152,6 +161,7 @@ policy4 = (!! 3)
 runTests :: Config -> AllResources -> IO ()
 runTests config@Config{..} resources@AllResources
   { arResources = innerResources@Resources {..}
+  , arConfigNft
   } = hspec $ do
   describe "single offer" $ do
     it "can be for only the policy id" $ do
@@ -167,7 +177,6 @@ runTests config@Config{..} resources@AllResources
 
         payouts =
           [ Payout (toSwapAddress $ fromString $ walletPkh buyerWallet) (M.singleton thePolicyId (Natural 1, M.empty))
-          , Payout (toSwapAddress $ fromString $ walletPkh marketplaceWallet) (valueToExpectedValue $ lovelaceValueOf 1000000)
           , Payout (toSwapAddress $ fromString $ walletPkh royaltyWallet) (valueToExpectedValue $ lovelaceValueOf 1000000)
           ]
         swapDatum = Swap (fromString . walletPkh . buyer $ rWallets) payouts
@@ -205,10 +214,14 @@ runTests config@Config{..} resources@AllResources
 
         void $ selectCollateralInput sellerAddr
         void $ balanceNonAdaAssets sellerAddr
+
+        readOnlyInput arConfigNft
+
         start <- currentSlot
         timerange start (start + 100)
         changeAddress sellerAddr
         sign $ walletSkeyPath sellerWallet
+        sign . walletSkeyPath $ marketplace rWallets
 
       waitForNextBlock cTestnetMagic
 
@@ -235,6 +248,7 @@ runTests config@Config{..} resources@AllResources
           it "cannot be shorted" $ \swaps -> do
             let
               buyerAddr = walletAddr $ buyer rWallets
+              marketplacePayout = Payout (toSwapAddress $ fromString . walletPkh . marketplace $ rWallets) (valueToExpectedValue $ lovelaceValueOf 1000000)
               evalConfig =
                 EvalConfig
                   { ecOutputDir = Nothing
@@ -250,7 +264,7 @@ runTests config@Config{..} resources@AllResources
 
               void $ output buyerAddr (assets <> "1758582 lovelace")
 
-              payoutTotal <- fmap mconcat $ for swaps $ \s -> fmap mconcat . for (sSwapPayouts $ sadSwap s) $ \Payout {..} ->
+              payoutTotal <- fmap mconcat $ for (marketplacePayout : concatMap (sSwapPayouts . sadSwap) swaps) $ \Payout {..} ->
                 let txValue = toTxValue $ expectedValueToValue pValue
                 in txValue <$ output (lookupWalletAddr pAddress rWallets) txValue
 
@@ -258,10 +272,14 @@ runTests config@Config{..} resources@AllResources
 
               void $ selectCollateralInput buyerAddr
               void $ balanceNonAdaAssets buyerAddr
+
+              readOnlyInput arConfigNft
+
               start <- currentSlot
               timerange start (start + 100)
               changeAddress buyerAddr
               sign . walletSkeyPath $ buyer rWallets
+              sign . walletSkeyPath $ marketplace rWallets
 
             waitForNextBlock cTestnetMagic
 
@@ -280,11 +298,11 @@ runTests config@Config{..} resources@AllResources
         before (createSwaps config innerResources
           [ swapSpec seller1 policy1
           , swapSpec seller1 policy2
-          , swapSpec seller1 policy3
-          , swapSpec seller1 policy4
-          , swapSpec seller2 policy1
-          , swapSpec seller2 policy2
-          , swapSpec seller2 policy3
+          -- , swapSpec seller1 policy3
+          -- , swapSpec seller1 policy4
+          -- , swapSpec seller2 policy1
+          -- , swapSpec seller2 policy2
+          -- , swapSpec seller2 policy3
           -- , swapSpec seller2 policy4
           ]) $ do
           it "can be really purchased in bulk upto 3" $ \swaps -> do
@@ -329,14 +347,17 @@ main = do
     testnetMagic = optsTestnetMagic opts
     sourceWalletAddressPath = optsSourceWalletAddressPath opts
     sourceWalletSkeyPath = optsSourceWalletSkeyPath opts
+    nftTokenName = "NFT"
 
   withTempDir $ \walletDir ->
     withProtocolParams testnetMagic $ \protocolParams -> do
       let mProtocolParams = Just protocolParams
       withResources testnetMagic mProtocolParams walletDir sourceWalletAddressPath sourceWalletSkeyPath $ \resources -> do
-        withPlutusFile testnetMagic (rWallets resources)
-          $ \plutusScript scriptAddr alwaysSucceedScript alwaysSucceedAddr -> do
+        withPlutusFile testnetMagic (rWallets resources) (fromString nftTokenName)
+          $ \plutusScript scriptAddr alwaysSucceedScript alwaysSucceedAddr nftScript nftPolicyId scriptPkh -> do
               scriptReferences <- createScriptReferences resources plutusScript sourceWalletAddressPath sourceWalletSkeyPath testnetMagic mProtocolParams
+
+
               let
                 config = Config
                   { cSourceWalletSkeyPath = sourceWalletSkeyPath
@@ -344,16 +365,25 @@ main = do
                   , cWalletDir = walletDir
                   , cProtocolParams = mProtocolParams
                   , cPlutusScript = plutusScript
+                  , cScriptPkh = scriptPkh
                   , cScriptAddr = scriptAddr
+                  , cNftTokenName = nftTokenName
+                  , cNftPolicyId = nftPolicyId
+                  , cNftPlutus = nftScript
                   , cTestnetMagic = testnetMagic
                   , cAlwaysSucceedScript = alwaysSucceedScript
                   , cAlwaysSucceedAddr = alwaysSucceedAddr
                   }
 
+              nftUTxO <- mintConfigNft config (configNft $ rWallets resources) (marketplace $ rWallets resources) (Policy nftPolicyId nftScript) nftTokenName 1
+
+              let
                 allResources = AllResources
                   { arResources = resources
                   , arScriptUtxos = scriptReferences
+                  , arConfigNft = nftUTxO
                   }
+
               runTests config allResources
 
 createScriptReferences :: Resources
@@ -394,7 +424,40 @@ createScriptReferences Resources {..} plutusScript sourceWalletAddressPath sourc
   concat
     <$> replicateM 8 (scriptReferenceDeployTx 1)
 
+mintConfigNft :: Config -> Wallet -> Wallet -> Policy -> String -> Integer -> IO UTxO
+mintConfigNft Config { cTestnetMagic, cProtocolParams, cScriptPkh } Wallet { walletAddr, walletSkeyPath } Wallet { walletPkh = marketplacePkh } policy token n = do
+  let
+    txValue = TxBuilder.Value . Map.singleton (policyId policy) . Map.singleton (encodedTokenName token) $ n
+    outputValue = "3000000 lovelace" <> txValue
+    evalConfig = mempty { ecTestnet = cTestnetMagic, ecProtocolParams = cProtocolParams }
 
+  void $ eval evalConfig $ do
+
+    let dynamicConfig = NftMinter.SwapDynamicConfig
+          { sdcValidOutputAddresses = NftMinter.NonEmptyAddress (Address (ScriptCredential (fromString cScriptPkh)) Nothing) []
+          -- ^ change this to addresses
+          , sdcMarketplaceAddresses = NftMinter.NonEmptyPaymentAddress (NftMinter.PaymentAddress (fromString marketplacePkh) Nothing) []
+          }
+
+    mint txValue (policyFile policy) ([] @Int)
+
+    void $ outputWithInlineDatum walletAddr outputValue dynamicConfig
+    (cInput, _) <- selectCollateralInput walletAddr
+    input . iUtxo $ cInput
+
+    changeAddress walletAddr
+    void . balanceNonAdaAssets $ walletAddr
+
+    sign walletSkeyPath
+
+  waitForNextBlock cTestnetMagic
+
+  utxos <- queryUtxos walletAddr cTestnetMagic
+
+  case filter ((outputValue ==) . utxoValue) utxos of
+    []  -> throwIO $ userError "failed to find nft utxo"
+    [x] -> pure x
+    _   -> throwIO $ userError "too many nft utxos"
 
 isEvalException :: Selector EvalException
 isEvalException = const True
@@ -448,8 +511,10 @@ createScriptReference Config {..} Resources {..} = do
 evalAccept :: Config -> AllResources -> SwapAndDatum -> SwapAndDatum -> IO ()
 evalAccept config@Config {..} AllResources
   { arResources = Resources {..}
+  , arConfigNft
   } theSwap offer = do
   let
+    marketplacePayout = Payout (toSwapAddress $ fromString . walletPkh . marketplace $ rWallets) (valueToExpectedValue $ lovelaceValueOf 1000000)
     sellerPkh = sOwner . sadSwap $ theSwap
     sellerWallet = lookupWallet (toSwapAddress sellerPkh) rWallets
     sellerAddr = walletAddr sellerWallet
@@ -472,16 +537,20 @@ evalAccept config@Config {..} AllResources
 
     void $ output buyerAddr (toTxValue asset <> "1758582 lovelace")
 
-    for_ payouts $ \Payout {..} -> output (lookupWalletAddr pAddress rWallets) . toTxValue $
+    for_ (marketplacePayout : payouts) $ \Payout {..} -> output (lookupWalletAddr pAddress rWallets) . toTxValue $
       expectedValueToValue pValue
 
     (cInput, _) <- selectCollateralInput sellerAddr
     input . iUtxo $ cInput
+
+    readOnlyInput arConfigNft
+
     void $ balanceNonAdaAssets sellerAddr
     start <- currentSlot
     timerange start (start + 100)
     changeAddress sellerAddr
     sign . walletSkeyPath $ sellerWallet
+    sign . walletSkeyPath . marketplace $ rWallets
 
   waitForNextBlock cTestnetMagic
 
@@ -489,8 +558,10 @@ evalAccepts :: Config -> AllResources -> [SwapAndDatum] -> SelectWallet -> IO ()
 evalAccepts config@Config {..} AllResources
   { arResources = Resources {..}
   , arScriptUtxos
+  , arConfigNft
   } swaps buyerW = do
   let
+    marketplacePayout = Payout (toSwapAddress $ fromString . walletPkh . marketplace $ rWallets) (valueToExpectedValue $ lovelaceValueOf 1000000)
     buyerAddr = walletAddr . buyerW $ rWallets
     mergePayouts = fmap (uncurry Payout) . Map.toList . foldr (Map.unionWith unionExpectedValue) Map.empty . fmap
       (\Payout {..} -> Map.singleton pAddress pValue)
@@ -510,11 +581,13 @@ evalAccepts config@Config {..} AllResources
 
     void $ output buyerAddr (assets <> "3000000 lovelace")
 
-    payoutTotal <- fmap mconcat . for payouts $ \Payout {..} ->
+    payoutTotal <- fmap mconcat . for (marketplacePayout : payouts) $ \Payout {..} ->
       let txValue = toTxValue (expectedValueToValue pValue)
       in txValue <$ output (lookupWalletAddr pAddress rWallets) txValue
 
     void $ selectInputs payoutTotal buyerAddr
+
+    readOnlyInput arConfigNft
 
     void $ selectCollateralInput buyerAddr
     void $ balanceNonAdaAssets buyerAddr
@@ -523,12 +596,14 @@ evalAccepts config@Config {..} AllResources
     timerange start (start + 100)
     changeAddress buyerAddr
     sign . walletSkeyPath . buyerW $ rWallets
+    sign . walletSkeyPath . marketplace $ rWallets
 
   waitForNextBlock cTestnetMagic
 
 evalAcceptsWithAlwaysSucceeds :: Config -> AllResources -> [SwapAndDatum] -> SelectWallet -> IO ()
 evalAcceptsWithAlwaysSucceeds config@Config {..} AllResources
   { arResources = Resources {..}
+  , arConfigNft
   } swaps buyerW = do
   let
     buyerAddr = walletAddr . buyerW $ rWallets
@@ -561,27 +636,37 @@ evalAcceptsWithAlwaysSucceeds config@Config {..} AllResources
 
     void $ selectInputs payoutTotal buyerAddr
 
+    readOnlyInput arConfigNft
+
     void $ selectCollateralInput buyerAddr
     void $ balanceNonAdaAssets buyerAddr
     start <- currentSlot
     timerange start (start + 100)
     changeAddress buyerAddr
     sign . walletSkeyPath . buyerW $ rWallets
+    sign . walletSkeyPath . marketplace $ rWallets
 
   waitForNextBlock cTestnetMagic
 
 evalCancelSwaps :: Config -> AllResources -> [SwapAndDatum] -> SelectWallet -> IO ()
 evalCancelSwaps config@Config {..} AllResources
   { arResources = Resources {..}
+  , arConfigNft
   } swaps canceller = do
   let
     Wallet {..} = canceller rWallets
-    evalConfig = mempty { ecTestnet = cTestnetMagic, ecProtocolParams = cProtocolParams }
+    evalConfig = mempty { ecTestnet = cTestnetMagic
+                        , ecProtocolParams = cProtocolParams
+                        , ecUseRequiredSigners = True
+                        }
 
   void $ eval evalConfig $ do
     void $ forScriptInputs config swaps $ \(s, _) utxo -> scriptInput utxo cPlutusScript s Cancel
     (cin, _) <- selectCollateralInput walletAddr
     input . iUtxo $ cin
+
+    readOnlyInput arConfigNft
+    void $ output walletAddr ("15000000 lovelace")
     void $ balanceNonAdaAssets walletAddr
     changeAddress walletAddr
     sign walletSkeyPath
@@ -636,7 +721,6 @@ data SwapSpec = SwapSpec
 stdPayouts :: SelectWallet -> Wallets -> [Payout]
 stdPayouts seller wallets =
   [ Payout (toSwapAddress $ fromString . walletPkh . seller $ wallets) (valueToExpectedValue $ lovelaceValueOf 8000000)
-  , Payout (toSwapAddress $ fromString . walletPkh . marketplace $ wallets) (valueToExpectedValue $ lovelaceValueOf 1000000)
   , Payout (toSwapAddress $ fromString . walletPkh . royalties $ wallets) (valueToExpectedValue $ lovelaceValueOf 1000000)
   ]
 
@@ -678,18 +762,13 @@ createSwap config@Config {..} wallet@Wallet {..} policy payouts = do
 
   datumHash <- hashDatum . toCliJson $ swapDatum
 
-
-  -- if there is an existing swap that is the same, reuse it
-  -- existingScriptInput <- filter ((== Just datumHash) . utxoDatumHash) <$> queryUtxos walletAddr cTestnetMagic
-
-  -- when (null existingScriptInput) $ do
-  --do
   txValue <- evalMint config wallet policy "123456" 1
   waitForNextBlock cTestnetMagic
 
   void $ eval evalConfig $ do
     outputWithHash cScriptAddr ("5000000 lovelace" <> txValue) swapDatum
     void $ selectInputs "7000000 lovelace" walletAddr
+
     changeAddress walletAddr
     void . balanceNonAdaAssets $ walletAddr
     sign walletSkeyPath
@@ -769,11 +848,11 @@ withProtocolParams testnetMagic runTest = withSystemTempFile "protocol-params.js
   callProcess "cardano-cli" (["query", "protocol-parameters", "--out-file", fp] <> toTestnetFlags testnetMagic)
   runTest fp
 
-withPlutusFile :: Maybe Integer -> Wallets -> (FilePath -> TxBuilder.Address -> FilePath -> TxBuilder.Address -> IO a) -> IO a
-withPlutusFile testnetMagic wallets runTest = withSystemTempFile "nft.plutus" $ \nftFp nftFh -> withSystemTempFile "nftPolicyId.txt" $ \policyIdFp policyIdFh -> withSystemTempFile "swap.plutus" $ \fp fh -> withSystemTempFile "alwaysSucceeds.plutus" $ \fp' fh' -> do
+withPlutusFile :: Maybe Integer -> Wallets -> Value.TokenName -> (FilePath -> TxBuilder.Address -> FilePath -> TxBuilder.Address -> FilePath -> String -> String -> IO a) -> IO a
+withPlutusFile testnetMagic wallets nftTokenName runTest = withSystemTempFile "nft.plutus" $ \nftFp nftFh -> withSystemTempFile "nftPolicyId.txt" $ \policyIdFp policyIdFh -> withSystemTempFile "swap.plutus" $ \fp fh -> withSystemTempFile "alwaysSucceeds.plutus" $ \fp' fh' -> do
   mapM_ hClose [fh, fh', nftFh, policyIdFh]
   let
-    theWalletAddr = walletAddr $ seller1 wallets
+    theWalletAddr = walletAddr $ configNft wallets
 
   sellerUtxos <- queryUtxos theWalletAddr testnetMagic
   nftUtxo <- case sellerUtxos of
@@ -781,8 +860,6 @@ withPlutusFile testnetMagic wallets runTest = withSystemTempFile "nft.plutus" $ 
     _ -> throwIO $ userError "no utxos!"
 
   let
-
-    nftTokenName = "NFT"
     nftConfig = NftMinter.NftConfig
       { ncInitialUtxo = nftUtxo
       , ncTokenName   = nftTokenName
@@ -803,6 +880,7 @@ withPlutusFile testnetMagic wallets runTest = withSystemTempFile "nft.plutus" $ 
         }
 
   writePlutusFile swapConfig fp
+
   writeSucceedFile fp'
   scriptAddr <- readProcess
     "cardano-cli"
@@ -814,7 +892,19 @@ withPlutusFile testnetMagic wallets runTest = withSystemTempFile "nft.plutus" $ 
     mempty
   putStrLn . mconcat $ ["Plutus script address: ", scriptAddr]
   putStrLn . mconcat $ ["Plutus script address: ", succeedScriptAddr]
-  runTest fp scriptAddr fp' succeedScriptAddr
+
+  resultJson <-
+    trim <$> readProcess "cardano-address" ["address", "inspect"] scriptAddr
+
+  scriptPkh <- case Aeson.decode (BSLC.pack resultJson) of
+    Nothing -> throwIO $ userError "failed to decode cardano-address json"
+    Just (v :: Value)  -> case v ^? key "spending_shared_hash" . _String of
+      Nothing -> throwIO $ userError "failed to find spending_shared_hash key"
+      Just ht -> pure $ Text.unpack ht
+
+  putStrLn . mconcat $ ["Plutus script pkh: ", scriptPkh]
+
+  runTest fp scriptAddr fp' succeedScriptAddr nftFp (show theNftPolicyId) scriptPkh
 
 {- HLINT ignore "Avoid lambda" -}
 withPolicies :: ([Policy] -> IO a) -> IO a
@@ -847,8 +937,7 @@ createWallets testnetMagic protocolParams walletDir sourceWalletAddressPath sour
     <*> createWallet' "marketplace"
     <*> createWallet' "royalties"
     <*> createWallet' "script-reference"
-
-
+    <*> createWallet' "config-nft"
 
   print newAddrs
 

@@ -464,7 +464,7 @@ swapValidator SwapConfig {..} _ r SwapScriptContext{sScriptContextTxInfo = parti
           signerIsOwner Swap{sOwner} = isSigner sTxInfoSignatories sOwner
 
           allScriptValue :: Value
-          allScriptValue =
+          !allScriptValue =
             foldr (\SwapTxInInfo {sTxInInfoResolved = SwapTxOut {sTxOutValue}} acc ->
                     sTxOutValue <> acc
                   )
@@ -472,7 +472,9 @@ swapValidator SwapConfig {..} _ r SwapScriptContext{sScriptContextTxInfo = parti
                   scriptInputs
 
           isValidOutput :: Address -> Bool
-          isValidOutput address = any (address==) (nonEmptyAddressToList sdcValidOutputAddresses)
+          isValidOutput address@Address {addressCredential}
+            =  any (address==) (nonEmptyAddressToList sdcValidOutputAddresses)
+            || any (\(Swap{sOwner}, _) -> addressCredential == PubKeyCredential sOwner) swaps
 
           validOutputsValue :: Value
           !validOutputsValue =
@@ -523,7 +525,7 @@ swapValidator SwapConfig {..} _ r SwapScriptContext{sScriptContextTxInfo = parti
             M.singleton
               adaSymbol
               ( Natural 0
-              , M.singleton adaToken (WholeNumber (min 1 ((1000 * saleAda) `divide` scMarketplaceFee)))
+              , M.singleton adaToken (WholeNumber (min 1 ((((1_000_000 * saleAda) `divide` (1000 - scMarketplaceFee))) `divide` scMarketplaceFee)))
               )
 
           -- We assume there are not other marketplace payouts

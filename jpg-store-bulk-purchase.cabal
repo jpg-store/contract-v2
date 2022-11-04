@@ -34,6 +34,7 @@ common lang
     DerivingStrategies
     DeriveGeneric
     DeriveAnyClass
+    NumericUnderscores
   ghc-options:
     -Wall -Wnoncanonical-monad-instances -Wincomplete-uni-patterns
     -Wincomplete-record-updates -Wredundant-constraints -Widentities
@@ -100,6 +101,8 @@ test-suite integration-tests
     , filepath
     , hspec
     , jpg-store-bulk-purchase
+    , lens
+    , lens-aeson
     , managed
     , mtl
     , plutus-core
